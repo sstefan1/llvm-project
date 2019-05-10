@@ -30,6 +30,7 @@
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Transforms/AggressiveInstCombine/AggressiveInstCombine.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/IPO/ForceFunctionAttrs.h"
 #include "llvm/Transforms/IPO/FunctionAttrs.h"
 #include "llvm/Transforms/IPO/InferFunctionAttrs.h"
@@ -557,6 +558,8 @@ void PassManagerBuilder::populateModulePassManager(
     RunInliner = true;
   }
 
+  // Infer attributes on declarations, call sites, arguments, etc.
+  MPM.add(createAttributorLegacyPass());
   MPM.add(createPostOrderFunctionAttrsLegacyPass());
   if (OptLevel > 2)
     MPM.add(createArgumentPromotionPass()); // Scalarize uninlined fn args
@@ -828,6 +831,8 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
 
   // Infer attributes about definitions. The readnone attribute in particular is
   // required for virtual constant propagation.
+  // Infer attributes on declarations, call sites, arguments, etc.
+  PM.add(createAttributorLegacyPass());
   PM.add(createPostOrderFunctionAttrsLegacyPass());
   PM.add(createReversePostOrderFunctionAttrsPass());
 
@@ -897,8 +902,10 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   // link-time inlining, and visibility of nocapture attribute.
   PM.add(createTailCallEliminationPass());
 
-  // Run a few AA driven optimizations here and now, to cleanup the code.
+  // Infer attributes on declarations, call sites, arguments, etc.
+  PM.add(createAttributorLegacyPass());
   PM.add(createPostOrderFunctionAttrsLegacyPass()); // Add nocapture.
+  // Run a few AA driven optimizations here and now, to cleanup the code.
   PM.add(createGlobalsAAWrapperPass()); // IP alias analysis.
 
   PM.add(createLICMPass(LicmMssaOptCap, LicmMssaNoAccForPromotionCap));

@@ -1,4 +1,4 @@
-; RUN: opt -S -functionattrs -enable-nonnull-arg-prop %s | FileCheck %s
+; RUN: opt -S -functionattrs -enable-nonnull-arg-prop -attributor %s | FileCheck %s
 ;
 ; This is an evolved example to stress test SCC parameter attribute propagation.
 ; The SCC in this test is made up of the following six function, three of which
