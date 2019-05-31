@@ -1472,6 +1472,11 @@ example:
     This function attribute indicates that the function does not call itself
     either directly or indirectly down any possible call path. This produces
     undefined behavior at runtime if the function ever does recurse.
+
+``nosync``
+    This function attribute indicates that the function does not communicate 
+    (synchronize) with another thread causing that other thread to delete
+    the memory.
 ``nounwind``
     This function attribute indicates that the function never raises an
     exception. If the function does raise an exception, its runtime
@@ -1707,7 +1712,7 @@ example:
     on the stack such that they are adjacent to the stack protector guard.
     The specific layout rules are:
 
-    #. Large arrays and structures containing large arrays
+#. Large arrays and structures containing large arrays
        (``>= ssp-buffer-size``) are closest to the stack protector.
     #. Small arrays and structures containing small arrays
        (``< ssp-buffer-size``) are 2nd closest to the protector.
@@ -1866,7 +1871,7 @@ E.g. inlining ``@f`` into ``@g`` in the following example
       call void @y() [ "deopt"(i32 10) ]
       call void @y() [ "deopt"(i32 10), "unknown"(i8* null) ]
       ret void
-    }
+  }
 
     define void @g() {
       call void @f() [ "deopt"(i32 20) ]
