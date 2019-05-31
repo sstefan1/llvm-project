@@ -1,6 +1,6 @@
-//===- Attributor.cpp - Module-wide attribute deduction -------------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// //===- Attributor.cpp - Module-wide attribute deduction -------------------===//
+// //
+// // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -44,6 +44,7 @@ STATISTIC(NumAttributesValidFixpoint,
           "Number of abstract attributes in a valid fixpoint state");
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
+STATISTIC(NumFnNoSync, "Number of functions marked nosync");
 
 // TODO: Determine a good default value.
 //
@@ -79,6 +80,13 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
                         const Attribute &Attr) {
   if (!AreStatisticsEnabled())
     return;
+
+  if (Attr.isStringAttribute()) {
+    StringRef StringAttr = Attr.getKindAsString();
+    if (StringAttr = Attr.getKindAsString())
+      NumFnNoSync++;
+    return;
+  }
 
   if (!Attr.isEnumAttribute())
     return;
@@ -240,6 +248,92 @@ const Function &AbstractAttribute::getAnchorScope() const {
   return const_cast<AbstractAttribute *>(this)->getAnchorScope();
 }
 
+/// ------------------------ NoSync Function Attribute -------------------------
+
+struct AANoSyncFunction : AbstractAttribute, BooleanState {
+
+  AANoSyncFunction(Function &F, InformationCache &InfoCache)
+      : AbstractAttribute(F, InfoCache);
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() overrife { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  /// See AbstractAttribute::getAsStr().
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "nosync" : "may-sync";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "nosync"));
+  }
+
+  /// See AbstractAttribute::getAttrKind().
+  virtual Attribute::AttrKind getAttrKind() const override {
+    return Attribute::None;
+  }
+
+  /// Returns true of "nosync" is assumed.
+  bool isAssumedNoSync() const { return getAssumed(); }
+
+  /// Returns true of "nosync" is known.
+  bool isKnownNoFree() const { return getKnown(); }
+
+  static constexpr AttributeLLAttrKind ID =
+      Attribute::AttrKind(Attribute::None - 2);
+};
+
+ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  // The map from instruction opcodes to those instructions in the function.
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  // auto &StoreInsts = OpcodeInstMap[Instruction::Load];
+  // auto &LoadInsts = OpcodeInstMap[Instruction::Store];
+  // auto &AtomicRMWInsts = OpcodeInstMap[Instruction::AtomicRMW];
+
+  auto MemoryOperators = {(unsigned)Instruction::Load,
+                          (unsigned)Instruction::Store,
+                          (unsigned)Instruction::AtomicRMW};
+
+  for (auto Opcode : MemoryOperators) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (!I->isAtomic())
+        continue;
+
+      auto ordering = I->getOrdering();
+
+      if (ordering == AtomicOrdering::Unordered ||
+          ordering == AtomicOrdering::Monotonic)
+        continue;
+      if (!isVolatile())
+        continue;
+
+      ImmutableCallSite ICS(I);
+      auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
+      if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+          !ICS.hasFnAttr("nosync")) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
+  }
+  return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -363,6 +457,9 @@ void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
 
+    // Every function might be marked "nosync".
+    registerAA(*new AANoSyncFunction(F, InfoCache));
+
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
   // during their initialization or update.
@@ -375,6 +472,10 @@ void Attributor::identifyDefaultAbstractAttributes(
     switch (I.getOpcode()) {
     default:
       break;
+    case Instruction::Load:
+    case Instruction::Store:
+    case Instruction::AtomicRMW:
+      IsInterestingOpcode = true;
     }
     if (IsInterestingOpcode)
       InstOpcodeMap[I.getOpcode()].push_back(&I);
