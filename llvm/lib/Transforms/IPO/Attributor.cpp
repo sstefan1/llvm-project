@@ -103,10 +103,10 @@ struct IntegerState : public AbstractState {
   bool isAtFixpoint() const override { return Assumed == Known; }
 
   /// See AbstractState::indicateOptimisticFixpoint(...)
-  void indicateOptimisticFixPoint() override { Known = Assumed; }
+  void indicateOptimisticFixpoint() override { Known = Assumed; }
 
   /// See AbstractState::indicatePessimisticFixpoint(...)
-  void indicatePessimisticFixPoint() override { Assumed = Known; }
+  void indicatePessimisticFixpoint() override { Assumed = Known; }
 
   /// Return the known state encoding
   base_t getKnown() const { return Known; }
@@ -350,6 +350,7 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
     return MP_FUNCTION;
   }
 
+
   /// See AbstractAttribute::getAsStr().
   virtual const std::string getAsStr() const override {
     return getAssumed() ? "nosync" : "may-sync";
@@ -430,11 +431,12 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
       auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
       if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
           !ICS.hasFnAttr("nosync") && !ICS.hasFnAttr("readnone")) {
-        indicateFixpoint(false);
+        indicatePessimisticFixpoint();
         return ChangeStatus::CHANGED;
       }
     }
   }
+  indicateOptimisticFixpoint();
   return ChangeStatus::UNCHANGED;
 }
 
