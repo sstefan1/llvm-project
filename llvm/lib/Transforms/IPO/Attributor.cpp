@@ -390,6 +390,8 @@ AtomicOrdering getOrdering(Instruction *I) {
     return cast<StoreInst>(I)->getOrdering();
   case Instruction::Load:
     return cast<LoadInst>(I)->getOrdering();
+  default:
+    return AtomicOrdering::NotAtomic;
   }
 }
 
@@ -401,6 +403,8 @@ bool isVolatile(Instruction *I) {
     return cast<StoreInst>(I)->isVolatile();
   case Instruction::Load:
     return cast<LoadInst>(I)->isVolatile();
+  default:
+    return false;
   }
 }
 
