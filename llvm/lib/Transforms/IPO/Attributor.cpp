@@ -102,13 +102,11 @@ struct IntegerState : public AbstractState {
   /// See AbstractState::isAtFixpoint()
   bool isAtFixpoint() const override { return Assumed == Known; }
 
-  /// See AbstractState::indicateFixpoint(...)
-  void indicateFixpoint(bool Optimistic) override {
-    if (Optimistic)
-      Known = Assumed;
-    else
-      Assumed = Known;
-  }
+  /// See AbstractState::indicateOptimisticFixpoint(...)
+  void indicateOptimisticFixPoint() override { return Known = Assumed; }
+
+  /// See AbstractState::indicatePessimisticFixpoint(...)
+  void indicatePessimisticFixPoint() override { return Assumed = Known; }
 
   /// Return the known state encoding
   base_t getKnown() const { return Known; }
@@ -169,7 +167,7 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   if (Attr.isStringAttribute()) {
     StringRef StringAttr = Attr.getKindAsString();
-    if (StringAttr = Attr.getKindAsString())
+    if (StringAttr == Attr.getKindAsString())
       NumFnNoSync++;
     return;
   }
@@ -378,7 +376,7 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
   /// Returns true of "nosync" is known.
   bool isKnownNoFree() const { return getKnown(); }
 
-  static constexpr AttributeLLAttrKind ID =
+  static constexpr Attribute::AttrKind ID =
       Attribute::AttrKind(Attribute::None - 2);
 };
 
@@ -389,7 +387,7 @@ AtomicOrdering getOrdering(Instruction *I) {
     return cast<AtomicRMWInst>(I)->getOrdering();
   case Instruction::Store:
     return cast<StoreInst>(I)->getOrdering();
-  case Instruction::LoadInst:
+  case Instruction::Load:
     return cast<LoadInst>(I)->getOrdering();
   }
 }
@@ -400,7 +398,7 @@ bool isVolatile(Instruction *I) {
     return cast<AtomicRMWInst>(I)->isVolatile();
   case Instruction::Store:
     return cast<StoreInst>(I)->isVolatile();
-  case Instruction::LoadInst:
+  case Instruction::Load:
     return cast<LoadInst>(I)->isVolatile();
   }
 }
