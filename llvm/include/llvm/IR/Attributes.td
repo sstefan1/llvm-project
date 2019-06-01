@@ -106,6 +106,9 @@ def NoRedZone : EnumAttr<"noredzone">;
 /// Mark the function as not returning.
 def NoReturn : EnumAttr<"noreturn">;
 
+/// Function does not synchronize.
+def NoSync : StrBoolAttr<"nofree">;
+
 /// Disable Indirect Branch Tracking.
 def NoCfCheck : EnumAttr<"nocf_check">;
 

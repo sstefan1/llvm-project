@@ -1,15 +1,15 @@
-//===- Attributor.cpp - Module-wide attribute deduction -------------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// //===- Attributor.cpp - Module-wide attribute deduction -------------------===//
+// //
+// // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements an inter procedural pass that deduces and/or propagating
-// attributes. This is done in an abstract interpretation style fixpoint
-// iteration. See the Attributor.h file comment and the class descriptions in
-// that file for more information.
+// This file implements an inter procedural pass which walk the call-graph
+// deducing and/or propagating attributes along the way. This is done in an
+// abstract interpretation style fixpoint iteration. See the Attributor.h
+// file comment and the class descriptions in that file for more information.
 //
 //===----------------------------------------------------------------------===//
 
@@ -44,6 +44,7 @@ STATISTIC(NumAttributesValidFixpoint,
           "Number of abstract attributes in a valid fixpoint state");
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
+STATISTIC(NumFnNoSync, "Number of functions marked nosync");
 
 // TODO: Determine a good default value.
 //
@@ -63,16 +64,6 @@ static cl::opt<bool> DisableAttributor(
     cl::desc("Disable the attributor inter-procedural deduction pass."),
     cl::init(false));
 
-static cl::opt<bool> VerifyAttributor(
-    "attributor-verify", cl::Hidden,
-    cl::desc("Verify the Attributor deduction and manifestation of attributes"),
-#ifdef EXPENSIVE_CHECKS
-    cl::init(true)
-#else
-    cl::init(false)
-#endif
-);
-
 /// Logic operators for the change status enum class.
 ///
 ///{
@@ -84,11 +75,102 @@ ChangeStatus llvm::operator&(ChangeStatus l, ChangeStatus r) {
 }
 ///}
 
+/// Simple state with integers encoding.
+///
+/// The interface ensures that the assumed bits are always a subset of the known
+/// bits. Users can only add known bits and, except through adding known bits,
+/// they can only remove assumed bits. This should guarantee monotoniticy and
+/// thereby the existence of a fixpoint (if used corretly). The fixpoint is
+/// reached when the assumed and known state/bits are equal. Users can
+/// force/inidicate a fixpoint. If an optimistic one is indicated, the known
+/// state will catch up with the assumed one, for a pessimistic fixpoint it is
+/// the other way around.
+struct IntegerState : public AbstractState {
+  /// Undrlying integer type, we assume 32 bits to be enough.
+  using base_t = uint32_t;
+
+  /// Initialize the (best) state.
+  IntegerState(base_t BestState = ~0) : Assumed(BestState) {}
+
+  /// Return the worst possible representable state.
+  static constexpr base_t getWorstState() { return 0; }
+
+  /// See AbstractState::isValidState()
+  /// NOTE: For now we simply pretend that the worst possible state is invalid.
+  bool isValidState() const override { return Assumed != getWorstState(); }
+
+  /// See AbstractState::isAtFixpoint()
+  bool isAtFixpoint() const override { return Assumed == Known; }
+
+  /// See AbstractState::indicateOptimisticFixpoint(...)
+  void indicateOptimisticFixpoint() override { Known = Assumed; }
+
+  /// See AbstractState::indicatePessimisticFixpoint(...)
+  void indicatePessimisticFixpoint() override { Assumed = Known; }
+
+  /// Return the known state encoding
+  base_t getKnown() const { return Known; }
+
+  /// Return the assumed state encoding.
+  base_t getAssumed() const { return Assumed; }
+
+  /// Return true if the bits set in \p BitsEncoding are "known bits".
+  bool isKnown(base_t BitsEncoding) const {
+    return (Known & BitsEncoding) == BitsEncoding;
+  }
+
+  /// Return true if the bits set in \p BitsEncoding are "assumed bits".
+  bool isAssumed(base_t BitsEncoding) const {
+    return (Assumed & BitsEncoding) == BitsEncoding;
+  }
+
+  /// Add the bits in \p BitsEncoding to the "known bits".
+  IntegerState &addKnownBits(base_t Bits) {
+    // Make sure we never miss any "known bits".
+    Assumed |= Bits;
+    Known |= Bits;
+    return *this;
+  }
+
+  /// Remove the bits in \p BitsEncoding from the "assumed bits" if not known.
+  IntegerState &removeAssumedBits(base_t BitsEncoding) {
+    // Make sure we never loose any "known bits".
+    Assumed = (Assumed & ~BitsEncoding) | Known;
+    return *this;
+  }
+
+  /// Keep only "assumed bits" also set in \p BitsEncoding but all known ones.
+  IntegerState &intersectAssumedBits(base_t BitsEncoding) {
+    // Make sure we never loose any "known bits".
+    Assumed = (Assumed & BitsEncoding) | Known;
+    return *this;
+  }
+
+private:
+  /// The known state encoding in an integer of type base_t.
+  base_t Known = getWorstState();
+
+  /// The assumed state encoding in an integer of type base_t.
+  base_t Assumed;
+};
+
+/// Simple wrapper for a single bit (boolean) state.
+struct BooleanState : public IntegerState {
+  BooleanState() : IntegerState(1){};
+};
+
 /// Helper to adjust the statistics.
 static void bookkeeping(AbstractAttribute::ManifestPosition MP,
                         const Attribute &Attr) {
   if (!AreStatisticsEnabled())
     return;
+
+  if (Attr.isStringAttribute()) {
+    StringRef StringAttr = Attr.getKindAsString();
+    if (StringAttr == Attr.getKindAsString())
+      NumFnNoSync++;
+    return;
+  }
 
   if (!Attr.isEnumAttribute())
     return;
@@ -117,7 +199,10 @@ static bool isEqualOrWorse(const Attribute &New, const Attribute &Old) {
   if (!Old.isIntAttribute())
     return true;
 
-  return Old.getValueAsInt() >= New.getValueAsInt();
+  if (Old.getValueAsInt() >= New.getValueAsInt())
+    return true;
+
+  return false;
 }
 
 /// Return true if the information provided by \p Attr was added to the
@@ -210,6 +295,7 @@ ChangeStatus AbstractAttribute::manifest(Attributor &A) {
       if (!addIfNotExistent(Ctx, Attr, Attrs, MP, ArgNo))
         continue;
 
+      // Bookkeeping.
       HasChanged = ChangeStatus::CHANGED;
       bookkeeping(MP, Attr);
     }
@@ -244,6 +330,117 @@ Function &AbstractAttribute::getAnchorScope() {
 
 const Function &AbstractAttribute::getAnchorScope() const {
   return const_cast<AbstractAttribute *>(this)->getAnchorScope();
+}
+
+/// ------------------------ NoSync Function Attribute -------------------------
+
+struct AANoSyncFunction : AbstractAttribute, BooleanState {
+
+  AANoSyncFunction(Function &F, InformationCache &InfoCache)
+      : AbstractAttribute(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+
+  /// See AbstractAttribute::getAsStr().
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "nosync" : "may-sync";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "nosync"));
+  }
+
+  /// See AbstractAttribute::getAttrKind().
+  virtual Attribute::AttrKind getAttrKind() const override {
+    return Attribute::None;
+  }
+
+  /// Returns true of "nosync" is assumed.
+  bool isAssumedNoSync() const { return getAssumed(); }
+
+  /// Returns true of "nosync" is known.
+  bool isKnownNoFree() const { return getKnown(); }
+
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::None - 2);
+};
+
+/// helper functions.
+AtomicOrdering getOrdering(Instruction *I) {
+  switch (I->getOpcode()) {
+  case Instruction::AtomicRMW:
+    return cast<AtomicRMWInst>(I)->getOrdering();
+  case Instruction::Store:
+    return cast<StoreInst>(I)->getOrdering();
+  case Instruction::Load:
+    return cast<LoadInst>(I)->getOrdering();
+  default:
+    return AtomicOrdering::NotAtomic;
+  }
+}
+
+bool isVolatile(Instruction *I) {
+  switch (I->getOpcode()) {
+  case Instruction::AtomicRMW:
+    return cast<AtomicRMWInst>(I)->isVolatile();
+  case Instruction::Store:
+    return cast<StoreInst>(I)->isVolatile();
+  case Instruction::Load:
+    return cast<LoadInst>(I)->isVolatile();
+  default:
+    return false;
+  }
+}
+
+ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  /// The map from instruction opcodes to those instructions in the function.
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  auto MemoryOperators = {(unsigned)Instruction::Load,
+                          (unsigned)Instruction::Store,
+                          (unsigned)Instruction::AtomicRMW};
+
+  /// We are looking for volatile instructions or Non-Relaxed atomics.
+  for (auto Opcode : MemoryOperators) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (!isVolatile(I) && !I->isAtomic())
+        continue;
+
+      auto ordering = getOrdering(I);
+
+      if ((ordering == AtomicOrdering::Unordered ||
+           ordering == AtomicOrdering::Monotonic) &&
+          !isVolatile(I))
+        continue;
+
+      ImmutableCallSite ICS(I);
+      auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
+      if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+          !ICS.hasFnAttr("nosync") && !ICS.hasFnAttr("readnone")) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
+  }
+  indicateOptimisticFixpoint();
+  return ChangeStatus::UNCHANGED;
 }
 
 /// ----------------------------------------------------------------------------
@@ -299,8 +496,6 @@ ChangeStatus Attributor::run() {
                     << IterationCounter << "/" << MaxFixpointIterations
                     << " iterations\n");
 
-  bool FinishedAtFixpoint = Worklist.empty();
-
   // Reset abstract arguments not settled in a sound fixpoint by now. This
   // happens when we stopped the fixpoint iteration early. Note that only the
   // ones marked as "changed" *and* the ones transitively depending on them
@@ -316,6 +511,7 @@ ChangeStatus Attributor::run() {
     if (!State.isAtFixpoint()) {
       State.indicatePessimisticFixpoint();
 
+      // Bookkeeping.
       NumAttributesTimedOut++;
     }
 
@@ -335,10 +531,9 @@ ChangeStatus Attributor::run() {
   for (AbstractAttribute *AA : AllAbstractAttributes) {
     AbstractState &State = AA->getState();
 
-    // If there is not already a fixpoint reached, we can now take the
-    // optimistic state. This is correct because we enforced a pessimistic one
-    // on abstract attributes that were transitively dependent on a changed one
-    // already above.
+    // If there is not already a fixpoint reached we can now take the optimistic
+    // state because we enforced a pessimistic one on abstract attributes we
+    // needed to above.
     if (!State.isAtFixpoint())
       State.indicateOptimisticFixpoint();
 
@@ -360,23 +555,7 @@ ChangeStatus Attributor::run() {
                     << " arguments while " << NumAtFixpoint
                     << " were in a valid fixpoint state\n");
 
-  // If verification is requested, we finished this run at a fixpoint, and the
-  // IR was changed, we re-run the whole fixpoint analysis, starting at
-  // re-initialization of the arguments. This re-run should not result in an IR
-  // change. Though, the (virtual) state of attributes at the end of the re-run
-  // might be more optimistic than the known state or the IR state if the better
-  // state cannot be manifested.
-  if (VerifyAttributor && FinishedAtFixpoint &&
-      ManifestChange == ChangeStatus::CHANGED) {
-    VerifyAttributor = false;
-    ChangeStatus VerifyStatus = run();
-    if (VerifyStatus != ChangeStatus::UNCHANGED)
-      llvm_unreachable(
-          "Attributor verification failed, re-run did result in an IR change "
-          "even after a fixpoint was reached in the original run.");
-    VerifyAttributor = true;
-  }
-
+  // Bookkeeping.
   NumAttributesManifested += NumManifested;
   NumAttributesValidFixpoint += NumAtFixpoint;
 
@@ -386,6 +565,9 @@ ChangeStatus Attributor::run() {
 void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
+
+    // Every function might be marked "nosync".
+    registerAA(*new AANoSyncFunction(F, InfoCache));
 
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
@@ -399,6 +581,10 @@ void Attributor::identifyDefaultAbstractAttributes(
     switch (I.getOpcode()) {
     default:
       break;
+    case Instruction::Load:
+    case Instruction::Store:
+    case Instruction::AtomicRMW:
+      IsInterestingOpcode = true;
     }
     if (IsInterestingOpcode)
       InstOpcodeMap[I.getOpcode()].push_back(&I);
@@ -455,7 +641,7 @@ static bool runAttributorOnSCC(SmallVectorImpl<Function *> &SCC) {
   LLVM_DEBUG(dbgs() << "[Attributor] Run on SCC with " << SCC.size()
                     << " functions.\n");
 
-  // Create an Attributor and initially empty information cache that is filled
+  // Create an attributor and initially empty informatin cache that is filled
   // while we identify default attribute opportunities.
   Attributor A;
   InformationCache InfoCache;
@@ -470,6 +656,8 @@ static bool runAttributorOnSCC(SmallVectorImpl<Function *> &SCC) {
     //       information was found we could duplicate the functions that do not
     //       have an exact definition.
     if (!F->hasExactDefinition()) {
+
+      // Bookkeeping.
       NumFnWithoutExactDefinition++;
       continue;
     }
@@ -479,12 +667,14 @@ static bool runAttributorOnSCC(SmallVectorImpl<Function *> &SCC) {
         F->hasFnAttribute(Attribute::OptimizeNone))
       continue;
 
+    // Bookkeeping.
     NumFnWithExactDefinition++;
 
+    // Sanity check.
     assert(!F->isDeclaration() && "Expected a definition not a declaration!");
 
-    // Populate the Attributor with abstract attribute opportunities in the
-    // function and the information cache with IR information.
+    // Populate the attributor with abstract attribute opportunities in the
+    // function and te information cache with IR information.
     A.identifyDefaultAbstractAttributes(*F, InfoCache);
   }
 
@@ -503,8 +693,8 @@ PreservedAnalyses AttributorPass::run(LazyCallGraph::SCC &C,
   }
 
   if (runAttributorOnSCC(SCCFunctions))
-    return PreservedAnalyses::none();
-  return PreservedAnalyses::all();
+    return PreservedAnalyses::all();
+  return PreservedAnalyses::none();
 }
 
 namespace {
