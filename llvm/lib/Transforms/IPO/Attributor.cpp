@@ -103,10 +103,10 @@ struct IntegerState : public AbstractState {
   bool isAtFixpoint() const override { return Assumed == Known; }
 
   /// See AbstractState::indicateOptimisticFixpoint(...)
-  void indicateOptimisticFixPoint() override { return Known = Assumed; }
+  void indicateOptimisticFixPoint() override { Known = Assumed; }
 
   /// See AbstractState::indicatePessimisticFixpoint(...)
-  void indicatePessimisticFixPoint() override { return Assumed = Known; }
+  void indicatePessimisticFixPoint() override { Assumed = Known; }
 
   /// Return the known state encoding
   base_t getKnown() const { return Known; }
