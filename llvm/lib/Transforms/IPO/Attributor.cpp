@@ -420,15 +420,14 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
   /// We are looking for volatile instructions or Non-Relaxed atomics.
   for (auto Opcode : MemoryOperators) {
     for (Instruction *I : OpcodeInstMap[Opcode]) {
-      if (!isVolatile(I))
-        continue;
-      if (!I->isAtomic())
+      if (!isVolatile(I) && !I->isAtomic())
         continue;
 
       auto ordering = getOrdering(I);
 
-      if (ordering == AtomicOrdering::Unordered ||
-          ordering == AtomicOrdering::Monotonic)
+      if ((ordering == AtomicOrdering::Unordered ||
+           ordering == AtomicOrdering::Monotonic) &&
+          !isVolatile(I))
         continue;
 
       ImmutableCallSite ICS(I);
