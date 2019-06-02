@@ -1,6 +1,6 @@
-// //===- Attributor.cpp - Module-wide attribute deduction -------------------===//
-// //
-// // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+//===- Attributor.cpp - Module-wide attribute deduction -------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -167,7 +167,7 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   if (Attr.isStringAttribute()) {
     StringRef StringAttr = Attr.getKindAsString();
-    if (StringAttr == Attr.getKindAsString())
+    if (StringAttr == "nosync")
       NumFnNoSync++;
     return;
   }
@@ -375,14 +375,18 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
   bool isAssumedNoSync() const { return getAssumed(); }
 
   /// Returns true of "nosync" is known.
-  bool isKnownNoFree() const { return getKnown(); }
+  bool isKnownNoSync() const { return getKnown(); }
 
   static constexpr Attribute::AttrKind ID =
       Attribute::AttrKind(Attribute::None - 2);
+
+  AtomicOrdering getOrdering(Instruction *I) const;
+
+  bool isVolatile(Instruction *I) const;
 };
 
-/// helper functions.
-AtomicOrdering getOrdering(Instruction *I) {
+/// Helper function used to get ordering of an atomic instruction.
+AbstractAttribute::AtomicOrdering getOrdering(Instruction *I) {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->getOrdering();
@@ -395,7 +399,8 @@ AtomicOrdering getOrdering(Instruction *I) {
   }
 }
 
-bool isVolatile(Instruction *I) {
+/// Helper function used to determine whether an instruction is volatile.
+Abstract Attribute::bool isVolatile(Instruction *I) {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->isVolatile();
