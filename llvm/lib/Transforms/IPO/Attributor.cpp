@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements an inter procedural pass which walk the call-graph
-// deducing and/or propagating attributes along the way. This is done in an
-// abstract interpretation style fixpoint iteration. See the Attributor.h
-// file comment and the class descriptions in that file for more information.
+// This file implements an inter procedural pass  that deduces and/or propagates
+// attributes along the way. This is done in an abstract interpretation style
+// fixpoint iteration. See the Attributor.h file comment and the class
+// descriptions in that file for more information.
 //
 //===----------------------------------------------------------------------===//
 
@@ -386,7 +386,7 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
 };
 
 /// Helper function used to get ordering of an atomic instruction.
-AbstractAttribute::AtomicOrdering getOrdering(Instruction *I) {
+AtomicOrdering AbstractAttribute::getOrdering(Instruction *I) const {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->getOrdering();
@@ -400,7 +400,7 @@ AbstractAttribute::AtomicOrdering getOrdering(Instruction *I) {
 }
 
 /// Helper function used to determine whether an instruction is volatile.
-Abstract Attribute::bool isVolatile(Instruction *I) {
+bool AbstractAttribute::isVolatile(Instruction *I) const {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->isVolatile();
