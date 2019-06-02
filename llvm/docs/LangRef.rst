@@ -1475,8 +1475,8 @@ example:
 
 ``nosync``
     This function attribute indicates that the function does not communicate 
-    (synchronize) with another thread causing that other thread to delete
-    the memory.
+    (synchronize) with another thread.
+    
 ``nounwind``
     This function attribute indicates that the function never raises an
     exception. If the function does raise an exception, its runtime

@@ -6,10 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements an inter procedural pass which walk the call-graph
-// deducing and/or propagating attributes along the way. This is done in an
-// abstract interpretation style fixpoint iteration. See the Attributor.h
-// file comment and the class descriptions in that file for more information.
+// This file implements an inter procedural pass that deduces and/or propagates
+// attributes. This is done in an abstract interpretation style fixpoint
+// iteration. See the Attributor.h file comment and the class descriptions in
+// that file for more information.
 //
 //===----------------------------------------------------------------------===//
 
