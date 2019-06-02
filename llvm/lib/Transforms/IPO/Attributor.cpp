@@ -444,7 +444,6 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
       }
     }
   }
-  indicateOptimisticFixpoint();
   return ChangeStatus::UNCHANGED;
 }
 
