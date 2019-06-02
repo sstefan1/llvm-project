@@ -386,7 +386,7 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
 };
 
 /// Helper function used to get ordering of an atomic instruction.
-AbstractAttribute::AtomicOrdering getOrdering(Instruction *I) {
+AatomicOrdering AbstractAttribute::getOrdering(Instruction *I) const {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->getOrdering();
@@ -400,7 +400,7 @@ AbstractAttribute::AtomicOrdering getOrdering(Instruction *I) {
 }
 
 /// Helper function used to determine whether an instruction is volatile.
-Abstract Attribute::bool isVolatile(Instruction *I) {
+bool AbstractAttribute::isVolatile(Instruction *I) const {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->isVolatile();
