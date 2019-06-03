@@ -1476,11 +1476,7 @@ example:
 ``nosync``
     This function attribute indicates that the function does not communicate 
     (synchronize) with another thread.
-<<<<<<< HEAD
-    
-=======
 
->>>>>>> D59918
 ``nounwind``
     This function attribute indicates that the function never raises an
     exception. If the function does raise an exception, its runtime
