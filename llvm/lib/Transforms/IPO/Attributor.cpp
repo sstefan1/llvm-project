@@ -371,7 +371,7 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
     return Attribute::None;
   }
 
-  /// Returns true of "nosync" is assumed.
+  /// Returns true if "nosync" is assumed.
   bool isAssumedNoSync() const { return getAssumed(); }
 
   /// Returns true of "nosync" is known.
@@ -394,6 +394,10 @@ AtomicOrdering AbstractAttribute::getOrdering(Instruction *I) const {
     return cast<StoreInst>(I)->getOrdering();
   case Instruction::Load:
     return cast<LoadInst>(I)->getOrdering();
+  case Instruction::Fence:
+    return cast<FenceInst>(I)->getOrdering();
+  case Instruction::AtomicCmpXchg:
+    return cast<AtomicCmpXchgInst>(I)->getOrdering();
   default:
     return AtomicOrdering::NotAtomic;
   }
@@ -408,6 +412,8 @@ bool AbstractAttribute::isVolatile(Instruction *I) const {
     return cast<StoreInst>(I)->isVolatile();
   case Instruction::Load:
     return cast<LoadInst>(I)->isVolatile();
+  case Instruction::AtomicCmpXchg:
+    return cast<AtomicCmpXchgInst>(I)->isVolatile();
   default:
     return false;
   }
@@ -416,37 +422,34 @@ bool AbstractAttribute::isVolatile(Instruction *I) const {
 ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
   Function &F = getAnchorScope();
 
-  /// The map from instruction opcodes to those instructions in the function.
-  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
-  auto MemoryOperators = {(unsigned)Instruction::Load,
-                          (unsigned)Instruction::Store,
-                          (unsigned)Instruction::AtomicRMW};
-
   /// We are looking for volatile instructions or Non-Relaxed atomics.
-  for (auto Opcode : MemoryOperators) {
-    for (Instruction *I : OpcodeInstMap[Opcode]) {
-      if (!isVolatile(I) && !I->isAtomic())
-        continue;
+  /// FIXME: We should ipmrove the handling of intrinsics.
+  for (Instruction *I : InfoCache.getReadOrWriteInstsForFunction(F)) {
+    ImmutableCallSite ICS(I);
+    auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
-      auto ordering = getOrdering(I);
-
-      if ((ordering == AtomicOrdering::Unordered ||
-           ordering == AtomicOrdering::Monotonic) &&
-          !isVolatile(I))
-        continue;
-
-      ImmutableCallSite ICS(I);
-      auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
-      if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
-          !ICS.hasFnAttr("nosync") && !ICS.hasFnAttr("readnone")) {
-        indicatePessimisticFixpoint();
-        return ChangeStatus::CHANGED;
-      }
+    if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+        !ICS.hasFnAttr("nosync") && !ICS.hasFnAttr("readnone")) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
     }
+
+    if (!isVolatile(I) && !I->isAtomic())
+      continue;
+
+    AtomicOrdering Ordering = getOrdering(I);
+
+    if ((Ordering == AtomicOrdering::Unordered ||
+         Ordering == AtomicOrdering::Monotonic) &&
+        !isVolatile(I))
+      continue;
+
+    indicatePessimisticFixpoint();
+    return ChangeStatus::CHANGED;
   }
+
   return ChangeStatus::UNCHANGED;
 }
-
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -588,6 +591,7 @@ void Attributor::identifyDefaultAbstractAttributes(
     case Instruction::Load:
     case Instruction::Store:
     case Instruction::AtomicRMW:
+    case Instruction::Fence:
       IsInterestingOpcode = true;
     }
     if (IsInterestingOpcode)
