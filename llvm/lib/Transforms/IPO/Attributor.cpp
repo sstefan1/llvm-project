@@ -43,6 +43,8 @@ STATISTIC(NumAttributesValidFixpoint,
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
 
+STATISTIC(NumFnNoFree, "Number of function marked nofree");
+
 // TODO: Determine a good default value.
 //
 // In the LLVM-TS and SPEC2006, 32 seems to not induce compile time overheads
@@ -71,6 +73,80 @@ static cl::opt<bool> VerifyAttributor(
 #endif
 );
 
+struct IntegerState : public AbstractState {
+  /// Undrlying integer type, we assume 32 bits to be enough.
+  //  using base_t = uint32_t;
+  //
+  /// Initialize the (best) state.
+  IntegerState(base_t BestState = ~0) : Assumed(BestState) {}
+
+  /// Return the worst possible representable state.
+  static constexpr base_t getWorstState() { return 0; }
+
+  /// See AbstractState::isValidState()
+  /// NOTE: For now we simply pretend that the worst possible state is invalid.
+  bool isValidState() const override { return Assumed != getWorstState(); }
+
+  /// See AbstractState::isAtFixpoint()
+  bool isAtFixpoint() const override { return Assumed == Known; }
+
+  /// See AbstractState::indicateOptimisticFixpoint(...)
+  void indicateOptimisticFixpoint() override { Known = Assumed; }
+
+  /// See AbstractState::indicatePessimisticFixpoint(...)
+  void indicatePessimisticFixpoint() override { Assumed = Known; }
+
+  /// Return the known state encoding
+  base_t getKnown() const { return Known; }
+
+  /// Return the assumed state encoding.
+  base_t getAssumed() const { return Assumed; }
+
+  /// Return true if the bits set in \p BitsEncoding are "known bits".
+  bool isKnown(base_t BitsEncoding) const {
+    return (Known & BitsEncoding) == BitsEncoding;
+  }
+
+  /// Return true if the bits set in \p BitsEncoding are "assumed bits".
+  bool isAssumed(base_t BitsEncoding) const {
+    return (Assumed & BitsEncoding) == BitsEncoding;
+  }
+
+  /// Add the bits in \p BitsEncoding to the "known bits".
+  IntegerState &addKnownBits(base_t Bits) {
+    // Make sure we never miss any "known bits".
+    Assumed |= Bits;
+    Known |= Bits;
+    return *this;
+  }
+
+  /// Remove the bits in \p BitsEncoding from the "assumed bits" if not known.
+  IntegerState &removeAssumedBits(base_t BitsEncoding) {
+    // Make sure we never loose any "known bits".
+    Assumed = (Assumed & ~BitsEncoding) | Known;
+    return *this;
+  }
+
+  /// Keep only "assumed bits" also set in \p BitsEncoding but all known ones.
+  IntegerState &intersectAssumedBits(base_t BitsEncoding) {
+    // Make sure we never loose any "known bits".
+    Assumed = (Assumed & BitsEncoding) | Known;
+    return *this;
+  }
+
+private:
+  /// The known state encoding in an integer of type base_t.
+  base_t Known = getWorstState();
+
+  /// The assumed state encoding in an integer of type base_t.
+  base_t Assumed;
+};
+
+/// Simple wrapper for a single bit (boolean) state.
+struct BooleanState : public IntegerState {
+  BooleanState() : IntegerState(1){};
+};
+
 /// Logic operators for the change status enum class.
 ///
 ///{
@@ -87,6 +163,14 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
                         const Attribute &Attr) {
   if (!AreStatisticsEnabled())
     return;
+
+  if (Attr.isStringAttribute()) {
+    StringRef StringAttr = Attr.getKindAsString();
+    if (StringAttr == "nofree") {
+      NumFnNoFree++;
+    }
+    return;
+  }
 
   if (!Attr.isEnumAttribute())
     return;
@@ -243,6 +327,82 @@ Function &AbstractAttribute::getAnchorScope() {
 const Function &AbstractAttribute::getAnchorScope() const {
   return const_cast<AbstractAttribute *>(this)->getAnchorScope();
 }
+/// ------------------------ No-Free Attributes ----------------------------
+
+struct AANoFreeFunction : AbstractAttribute, BooleanState {
+
+  /// See AbstractAttribute::AbstractAttribute(...).
+  AANoFreeFunction(Function &F, InformationCache &InfoCache)
+      : AbstractAttribute(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  ///{
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  ///}
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  /// See AbstractAttribute::getAsStr().
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "nofree" : "may-free";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// Return the deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "nofree"));
+  }
+
+  /// See AbstractAttribute::getAttrKind().
+  virtual Attribute::AttrKind getAttrKind() const override {
+    return Attribute::None;
+  }
+
+  /// Return true if "nofree" is assumed.
+  bool isAssumedNoFree() const { return getAssumed(); }
+
+  /// Return true if "nofree" is known.
+  bool isKnownNoFree() const { return getKnown(); }
+
+  /// FIXME: I tried ((AttrKind) - 2) for ID but I got exception so I use
+  /// Attribute::None + 1 for now.
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::None + 1);
+};
+
+ChangeStatus AANoFreeFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  // The map from instruction opcodes to those instructions in the function.
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+
+  for (unsigned Opcode :
+       {(unsigned)Instruction::Invoke, (unsigned)Instruction::CallBr,
+        (unsigned)Instruction::Call}) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      // FIXME: Assume that all intrinsic function would free memory for now.
+
+      auto ICS = ImmutableCallSite(I);
+      auto *NoFreeAA = A.getAAFor<AANoFreeFunction>(*this, *I);
+
+      if ((!NoFreeAA || !NoFreeAA->isValidState() ||
+           !NoFreeAA->isAssumedNoFree()) &&
+          !ICS.hasFnAttr("nofree")) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
+  }
+  return ChangeStatus::UNCHANGED;
+}
 
 /// ----------------------------------------------------------------------------
 ///                               Attributor
@@ -385,6 +545,8 @@ void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
 
+  registerAA(*new AANoFreeFunction(F, InfoCache));
+
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
   // during their initialization or update.
@@ -396,7 +558,14 @@ void Attributor::identifyDefaultAbstractAttributes(
 
     switch (I.getOpcode()) {
     default:
+      assert((!ImmutableCallSite(&I)) && (!isa<CallBase>(&I)) &&
+             "New call site/base instruction type needs to be known in the "
+             "attributor!");
       break;
+    case Instruction::Call:
+    case Instruction::CallBr:
+    case Instruction::Invoke:
+      IsInterestingOpcode = true;
     }
     if (IsInterestingOpcode)
       InstOpcodeMap[I.getOpcode()].push_back(&I);
@@ -521,4 +690,3 @@ INITIALIZE_PASS_BEGIN(AttributorLegacyPass, "attributor",
                       "Deduce and propagate attributes", false, false)
 INITIALIZE_PASS_END(AttributorLegacyPass, "attributor",
                     "Deduce and propagate attributes", false, false)
-
