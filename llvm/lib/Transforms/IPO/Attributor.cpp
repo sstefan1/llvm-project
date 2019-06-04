@@ -374,42 +374,58 @@ struct AANoSyncFunction : AbstractAttribute, BooleanState {
   /// Returns true if "nosync" is assumed.
   bool isAssumedNoSync() const { return getAssumed(); }
 
-  /// Returns true of "nosync" is known.
+  /// Returns true if "nosync" is known.
   bool isKnownNoSync() const { return getKnown(); }
 
   static constexpr Attribute::AttrKind ID =
       Attribute::AttrKind(Attribute::None - 2);
 
-  AtomicOrdering getOrdering(Instruction *I) const;
+  /// Helper function used to get ordering of an atomic instruction.
+  bool isNonRelaxedAtomic(Instruction *I) const;
 
+  /// Helper function used to determine whether an instruction is volatile.
   bool isVolatile(Instruction *I) const;
 };
 
-/// Helper function used to get ordering of an atomic instruction.
-AtomicOrdering AANoSyncFunction::getOrdering(Instruction *I) const {
-  AtomicOrdering Success, Failure;
+bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) const {
+  if (!I->isAtomic())
+    return false;
+
+  AtomicOrdering Success, Failure, Ordering;
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
-    return cast<AtomicRMWInst>(I)->getOrdering();
+    Ordering = cast<AtomicRMWInst>(I)->getOrdering();
+    break;
   case Instruction::Store:
-    return cast<StoreInst>(I)->getOrdering();
+    Ordering = cast<StoreInst>(I)->getOrdering();
+    break;
   case Instruction::Load:
-    return cast<LoadInst>(I)->getOrdering();
+    Ordering = cast<LoadInst>(I)->getOrdering();
+    break;
   case Instruction::Fence:
-    return cast<FenceInst>(I)->getOrdering();
+    Ordering = cast<FenceInst>(I)->getOrdering();
+    break;
   case Instruction::AtomicCmpXchg:
     Success = cast<AtomicCmpXchgInst>(I)->getSuccessOrdering();
     Failure = cast<AtomicCmpXchgInst>(I)->getFailureOrdering();
     if (Success == AtomicOrdering::Unordered ||
         Success == AtomicOrdering::Monotonic)
-      return Failure;
-    return Success;
+        return false;
+    if (Failure == AtomicOrdering::Unordered ||
+        Failure == AtomicOrdering::Monotonic)
+        return false;
   default:
-    return AtomicOrdering::NotAtomic;
+    Ordering = AtomicOrdering::NotAtomic;
+
+    break;
+    // Relaxed.
+    if (Ordering == AtomicOrdering::Unordered ||
+        Ordering == AtomicOrdering::Monotonic)
+      return false;
+    return true;
   }
 }
 
-/// Helper function used to determine whether an instruction is volatile.
 bool AANoSyncFunction::isVolatile(Instruction *I) const {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
@@ -432,22 +448,18 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
   /// FIXME: We should ipmrove the handling of intrinsics.
   for (Instruction *I : InfoCache.getReadOrWriteInstsForFunction(F)) {
     ImmutableCallSite ICS(I);
+    if(!ICS)
+        continue;
+
     auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
     if ((!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
-        !ICS.hasFnAttr("nosync") && !ICS.hasFnAttr("readnone")) {
+        !ICS.hasFnAttr("nosync")) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;
     }
 
-    if (!isVolatile(I) && !I->isAtomic())
-      continue;
-
-    AtomicOrdering Ordering = getOrdering(I);
-
-    if ((Ordering == AtomicOrdering::Unordered ||
-         Ordering == AtomicOrdering::Monotonic) &&
-        !isVolatile(I))
+    if (!isVolatile(I) && !isNonRelaxedAtomic(I))
       continue;
 
     indicatePessimisticFixpoint();
@@ -594,11 +606,6 @@ void Attributor::identifyDefaultAbstractAttributes(
     switch (I.getOpcode()) {
     default:
       break;
-    case Instruction::Load:
-    case Instruction::Store:
-    case Instruction::AtomicRMW:
-    case Instruction::Fence:
-      IsInterestingOpcode = true;
     }
     if (IsInterestingOpcode)
       InstOpcodeMap[I.getOpcode()].push_back(&I);
