@@ -42,6 +42,7 @@ STATISTIC(NumAttributesValidFixpoint,
           "Number of abstract attributes in a valid fixpoint state");
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
+STATISTIC(NumFnNoSync, "Number of functions marked nosync");
 
 // TODO: Determine a good default value.
 //
@@ -78,11 +79,20 @@ ChangeStatus llvm::operator&(ChangeStatus l, ChangeStatus r) {
 }
 ///}
 
+
+
 /// Helper to adjust the statistics.
 static void bookkeeping(AbstractAttribute::ManifestPosition MP,
                         const Attribute &Attr) {
   if (!AreStatisticsEnabled())
     return;
+
+  if (Attr.isStringAttribute()) {
+    StringRef StringAttr = Attr.getKindAsString();
+    if (StringAttr == "nosync")
+      NumFnNoSync++;
+    return;
+  }
 
   if (!Attr.isEnumAttribute())
     return;
@@ -240,6 +250,129 @@ const Function &AbstractAttribute::getAnchorScope() const {
   return const_cast<AbstractAttribute *>(this)->getAnchorScope();
 }
 
+/// ------------------------ NoSync Function Attribute -------------------------
+
+struct AANoSyncFunction : AANoSync {
+
+  AANoSyncFunction(Function &F, InformationCache &InfoCache)
+      : AANoSync(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "nosync"));
+  }
+
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::None + 1);
+
+  /// Helper function used to determine whether an instruction is non-relaxed
+  /// atomic. In other words, if an atomic instruction does not have unordered
+  /// or monotonic ordering
+  static bool isNonRelaxedAtomic(Instruction *I);
+
+  /// Helper function used to determine whether an instruction is volatile.
+  static bool isVolatile(Instruction *I);
+};
+
+bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
+  if (!I->isAtomic())
+    return false;
+
+  AtomicOrdering Ordering;
+  switch (I->getOpcode()) {
+  case Instruction::AtomicRMW:
+    Ordering = cast<AtomicRMWInst>(I)->getOrdering();
+    break;
+  case Instruction::Store:
+    Ordering = cast<StoreInst>(I)->getOrdering();
+    break;
+  case Instruction::Load:
+    Ordering = cast<LoadInst>(I)->getOrdering();
+    break;
+  case Instruction::Fence:
+    Ordering = cast<FenceInst>(I)->getOrdering();
+    break;
+  case Instruction::AtomicCmpXchg: {
+    AtomicOrdering Success = cast<AtomicCmpXchgInst>(I)->getSuccessOrdering();
+    AtomicOrdering Failure = cast<AtomicCmpXchgInst>(I)->getFailureOrdering();
+    // Only if both are relaxed, than it can be treated as relaxed.
+    // Otherwise it is non-relaxed.
+    if (Success == AtomicOrdering::Unordered ||
+        Success == AtomicOrdering::Monotonic)
+      return false;
+    if (Failure == AtomicOrdering::Unordered ||
+        Failure == AtomicOrdering::Monotonic)
+      return false;
+    return true;
+  }
+  default:
+    // Unknown atomic, assume non-relaxed.
+    return true;
+  }
+
+  // Relaxed.
+  if (Ordering == AtomicOrdering::Unordered ||
+      Ordering == AtomicOrdering::Monotonic)
+    return false;
+  return true;
+}
+
+bool AANoSyncFunction::isVolatile(Instruction *I) {
+  switch (I->getOpcode()) {
+  case Instruction::AtomicRMW:
+    return cast<AtomicRMWInst>(I)->isVolatile();
+  case Instruction::Store:
+    return cast<StoreInst>(I)->isVolatile();
+  case Instruction::Load:
+    return cast<LoadInst>(I)->isVolatile();
+  case Instruction::AtomicCmpXchg:
+    return cast<AtomicCmpXchgInst>(I)->isVolatile();
+  default:
+    return false;
+  }
+}
+
+ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  /// We are looking for volatile instructions or Non-Relaxed atomics.
+  /// FIXME: We should ipmrove the handling of intrinsics.
+  for (Instruction *I : InfoCache.getReadOrWriteInstsForFunction(F)) {
+    ImmutableCallSite ICS(I);
+    auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
+
+    if (!ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+        !ICS.hasFnAttr("nosync")) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+
+    if (!isVolatile(I) && !isNonRelaxedAtomic(I))
+      continue;
+
+    indicatePessimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -381,6 +514,9 @@ ChangeStatus Attributor::run() {
 void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
+
+  // Every function might be marked "nosync"
+  registerAA(*new AANoSyncFunction(F, InfoCache));
 
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
@@ -526,4 +662,3 @@ INITIALIZE_PASS_BEGIN(AttributorLegacyPass, "attributor",
                       "Deduce and propagate attributes", false, false)
 INITIALIZE_PASS_END(AttributorLegacyPass, "attributor",
                     "Deduce and propagate attributes", false, false)
-
