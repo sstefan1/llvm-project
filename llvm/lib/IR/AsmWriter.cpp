@@ -3351,10 +3351,14 @@ void AssemblyWriter::printFunction(const Function *F) {
     std::string AttrStr;
 
     for (const Attribute &Attr : AS) {
-      if (!Attr.isStringAttribute()) {
-        if (!AttrStr.empty()) AttrStr += ' ';
-        AttrStr += Attr.getAsString();
-      }
+      bool IsStringAttr = Attr.isStringAttribute();
+      auto AttrKeyStr = Attr.getAsString();
+      // Filter string attributes based on the size of key + value. This is a heuristic.
+      if (IsStringAttr && (AttrKeyStr.size() > 15 + /* quotes */ 4 + /* equal sign */ 1))
+        continue;
+      if (!AttrStr.empty())
+        AttrStr += ' ';
+      AttrStr += AttrKeyStr;
     }
 
     if (!AttrStr.empty())
