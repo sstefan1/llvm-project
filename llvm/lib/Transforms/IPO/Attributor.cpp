@@ -252,7 +252,7 @@ const Function &AbstractAttribute::getAnchorScope() const {
 
 /// ------------------------ NoSync Function Attribute -------------------------
 
-struct AANoSyncFunction : AANoSync {
+struct AANoSyncFunction : AANoSync, BooleanState {
 
   AANoSyncFunction(Function &F, InformationCache &InfoCache)
       : AANoSync(F, InfoCache) {}
@@ -268,6 +268,10 @@ struct AANoSyncFunction : AANoSync {
     return MP_FUNCTION;
   }
 
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "nosync" : "may-sync";
+  }
+
   /// See AbstractAttribute::updateImpl(...).
   virtual ChangeStatus updateImpl(Attributor &A) override;
 
@@ -277,6 +281,10 @@ struct AANoSyncFunction : AANoSync {
     LLVMContext &Ctx = AnchoredVal.getContext();
     Attrs.emplace_back(Attribute::get(Ctx, "nosync"));
   }
+
+  virtual bool isAssumedNoSync() const override { return getAssumed(); }
+
+  virtual bool isKnownNoSync() const override { return getKnown(); }
 
   static constexpr Attribute::AttrKind ID =
       Attribute::AttrKind(Attribute::None + 1);
@@ -357,7 +365,7 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
     ImmutableCallSite ICS(I);
     auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
-    if (!ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+    if (ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
         !ICS.hasFnAttr("nosync")) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;

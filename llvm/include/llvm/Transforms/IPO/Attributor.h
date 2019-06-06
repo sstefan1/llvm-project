@@ -644,15 +644,10 @@ Pass *createAttributorLegacyPass();
 ///                       Abstract Attribute Classes
 /// ----------------------------------------------------------------------------
 
-struct AANoSync : public AbstractAttribute, BooleanState {
+struct AANoSync : public AbstractAttribute {
   /// An abstract interface for all nosync attributes.
   AANoSync(Value &V, InformationCache &InfoCache)
       : AbstractAttribute(V, InfoCache) {}
-
-  /// See AbstractAttribute::getAsStr().
-  virtual const std::string getAsStr() const override {
-    return getAssumed() ? "nosync" : "may-sync";
-  }
 
   /// See AbstractAttribute::getAttrKind().
   virtual Attribute::AttrKind getAttrKind() const override {
@@ -660,11 +655,11 @@ struct AANoSync : public AbstractAttribute, BooleanState {
   }
 
   /// Returns true if "nosync" is assumed.
-  bool isAssumedNoSync() const { return getAssumed(); }
+  virtual bool isAssumedNoSync() const = 0;
 
   /// Returns true if "nosync" is known.
-  bool isKnownNoSync() const { return getKnown(); }
-}; // namespace llvm
+  virtual bool isKnownNoSync() const = 0;
+};
 
 } // end namespace llvm
 
