@@ -19,6 +19,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
@@ -42,6 +44,7 @@ STATISTIC(NumAttributesValidFixpoint,
           "Number of abstract attributes in a valid fixpoint state");
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
+STATISTICS(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
 
 // TODO: Determine a good default value.
 //
@@ -86,10 +89,14 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   if (!Attr.isEnumAttribute())
     return;
-  //switch (Attr.getKindAsEnum()) {
-  //default:
-  //  return;
-  //}
+
+  switch (Attr.getKindAsEnum()) {
+  case Attribute::NoAlias:
+    NumFnArgumentsNoAlias++;
+    return;
+  default:
+    return;
+  }
 }
 
 /// Helper to identify the correct offset into an attribute list.
@@ -241,6 +248,178 @@ const Function &AbstractAttribute::getAnchorScope() const {
   return const_cast<AbstractAttribute *>(this)->getAnchorScope();
 }
 
+/// ------------------------ NoAlias Argument Attribute ------------------------
+
+struct AANoAliasImpl : AANoAlias, BooleanState {
+  AANoAliasImpl(Value &V, InformationCache &InfoCache)
+      : AANoAlias(V, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "noalias" : "may-alias";
+  }
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "noalias"));
+  }
+
+  /// See AANoAlias::isAssumedNoAlias().
+  virtual bool isAssumedNoAlias() const override { return getAssumed(); }
+
+  /// See AANoAlias::isKnowndNoAlias().
+  virtual bool isKnownNoAlias() const override { return getKnown(); }
+};
+
+/// NoAlias attribute for function arguments.
+struct AANoAliasArgument : AANoAliasImpl {
+
+  AANoAliasArgument(Argument &Arg, InformationCache &InfoCache)
+      : AANoAliasImpl(Arg, InfoCache) {}
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_ARGUMENT;
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+};
+
+/// NoAlias attribute for function return value.
+struct AANoAliasReturned : AANoAliasImpl {
+
+  AANoAliasReturned(Function &F, InformationCache &InfoCache)
+      : AANoAliasImpl(F, InfoCache) {}
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_RETURNED;
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// Tests whether a function is "malloc-like"
+  ///
+  /// A function is "malloc-like" if it returns either null or a pointer that
+  /// doesn't alias any other pointer visible to the caller.
+  static bool isFunctionMallocLike(Function &F);
+};
+
+ChangeStatus AANoAliasArgument::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+  Argument *Arg = cast<Argument>(getAnchoredValue());
+
+  AliasAnalysis AA = A.getAnalysis<AliasAnalysis>();
+
+  for (Instruction *I : InfoCache.getReadOrWriteInstsForFunction(*F)) {
+    for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i) {
+      Value *Operand = I->getOperand(i);
+      if (!Operand->getType()->isPointerTy())
+        continue;
+      if (AA.alias(Arg, Operand) == AliasAnalysis::NoAlias)
+        continue;
+
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+  }
+  return ChangeStatus::UNCHANGED;
+}
+
+bool AANoAliasReturned::isFunctionMallocLike(Function &F) {
+  SmallSetVector<Value *, 8> FlowsToReturn;
+  for (BasicBlock &BB : *F)
+    if (ReturnInst *Ret = dyn_cast<ReturnInst>(BB.getTerminator()))
+      FlowsToReturn.insert(Ret->getReturnValue());
+
+  for (unsigned i = 0; i != FlowsToReturn.size(); ++i) {
+    Value *RetVal = FlowsToReturn[i];
+
+    if (Constant *C = dyn_cast<Constant>(RetVal)) {
+      if (!C->isNullValue() && !isa<UndefValue>(C))
+        return false;
+
+      continue;
+    }
+
+    if (isa<Argument>(RetVal))
+      return false;
+
+    if (Instruction *RVI = dyn_cast<Instruction>(RetVal))
+      switch (RVI->getOpcode()) {
+      // Extend the analysis by looking upwards.
+      case Instruction::BitCast:
+      case Instruction::GetElementPtr:
+      case Instruction::AddrSpaceCast:
+        FlowsToReturn.insert(RVI->getOperand(0));
+        continue;
+      case Instruction::Select: {
+        SelectInst *SI = cast<SelectInst>(RVI);
+        FlowsToReturn.insert(SI->getTrueValue());
+        FlowsToReturn.insert(SI->getFalseValue());
+        continue;
+      }
+      case Instruction::PHI: {
+        PHINode *PN = cast<PHINode>(RVI);
+        for (Value *IncValue : PN->incoming_values())
+          FlowsToReturn.insert(IncValue);
+        continue;
+      }
+
+      // Check whether the pointer came from an allocation.
+      case Instruction::Alloca:
+        break;
+      case Instruction::Call:
+      case Instruction::Invoke: {
+        CallSite CS(RVI);
+        if (CS.hasRetAttr(Attribute::NoAlias))
+          break;
+        if (CS.getCalledFunction())
+          break;
+        LLVM_FALLTHROUGH;
+      }
+      default:
+        return false; // Did not come from an allocation.
+      }
+
+    if (PointerMayBeCaptured(RetVal, false, /*StoreCaptures=*/false))
+      return false;
+  }
+
+  return true;
+}
+
+ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  // Alreade noalias.
+  if (F->returnDoesNotAlias())
+    return ChangeStatus::UNCHANGED;
+
+  // We can infer and propagate function attributes only when wh know that the
+  // definition we'll get at link time is *exactly* the definition we see now.
+  // For more details, see GlobalValue::mayBeDerefined.
+  //
+  // We annotate noalias return values, which are only applicable to pointer
+  // types
+  if (!F->hasExactDefinition() || !F->getReturnType()->isPointerTy() ||
+      !isFunctionMallocLike(F)) {
+    indicatePessimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -254,8 +433,8 @@ ChangeStatus Attributor::run() {
                     << AllAbstractAttributes.size()
                     << " abstract attributes.\n");
 
-  // Now that all abstract attributes are collected and initialized we start the
-  // abstract analysis.
+  // Now that all abstract attributes are collected and initialized we start
+  // the abstract analysis.
 
   unsigned IterationCounter = 1;
 
@@ -283,8 +462,8 @@ ChangeStatus Attributor::run() {
       if (AA->update(*this) == ChangeStatus::CHANGED)
         ChangedAAs.push_back(AA);
 
-    // Reset the work list and repopulate with the changed abstract attributes.
-    // Note that dependent ones are added above.
+    // Reset the work list and repopulate with the changed abstract
+    // attributes. Note that dependent ones are added above.
     Worklist.clear();
     Worklist.insert(ChangedAAs.begin(), ChangedAAs.end());
 
@@ -332,8 +511,8 @@ ChangeStatus Attributor::run() {
 
     // If there is not already a fixpoint reached, we can now take the
     // optimistic state. This is correct because we enforced a pessimistic one
-    // on abstract attributes that were transitively dependent on a changed one
-    // already above.
+    // on abstract attributes that were transitively dependent on a changed
+    // one already above.
     if (!State.isAtFixpoint())
       State.indicateOptimisticFixpoint();
 
@@ -357,10 +536,10 @@ ChangeStatus Attributor::run() {
 
   // If verification is requested, we finished this run at a fixpoint, and the
   // IR was changed, we re-run the whole fixpoint analysis, starting at
-  // re-initialization of the arguments. This re-run should not result in an IR
-  // change. Though, the (virtual) state of attributes at the end of the re-run
-  // might be more optimistic than the known state or the IR state if the better
-  // state cannot be manifested.
+  // re-initialization of the arguments. This re-run should not result in an
+  // IR change. Though, the (virtual) state of attributes at the end of the
+  // re-run might be more optimistic than the known state or the IR state if
+  // the better state cannot be manifested.
   if (VerifyAttributor && FinishedAtFixpoint &&
       ManifestChange == ChangeStatus::CHANGED) {
     VerifyAttributor = false;
