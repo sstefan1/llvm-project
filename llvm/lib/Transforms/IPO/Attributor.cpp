@@ -44,7 +44,7 @@ STATISTIC(NumAttributesValidFixpoint,
           "Number of abstract attributes in a valid fixpoint state");
 STATISTIC(NumAttributesManifested,
           "Number of abstract attributes manifested in IR");
-STATISTICS(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
+STATISTIC(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
 
 // TODO: Determine a good default value.
 //
@@ -92,7 +92,7 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   switch (Attr.getKindAsEnum()) {
   case Attribute::NoAlias:
-    NumFnArgumentsNoAlias++;
+    NumFnArgumentNoAlias++;
     return;
   default:
     return;
@@ -278,20 +278,6 @@ struct AANoAliasImpl : AANoAlias, BooleanState {
   virtual bool isKnownNoAlias() const override { return getKnown(); }
 };
 
-/// NoAlias attribute for function arguments.
-struct AANoAliasArgument : AANoAliasImpl {
-
-  AANoAliasArgument(Argument &Arg, InformationCache &InfoCache)
-      : AANoAliasImpl(Arg, InfoCache) {}
-
-  /// See AbstractAttribute::getManifestPosition().
-  virtual ManifestPosition getManifestPosition() const override {
-    return MP_ARGUMENT;
-  }
-
-  /// See AbstractAttribute::updateImpl(...).
-  virtual ChangeStatus updateImpl(Attributor &A) override;
-};
 
 /// NoAlias attribute for function return value.
 struct AANoAliasReturned : AANoAliasImpl {
@@ -314,30 +300,9 @@ struct AANoAliasReturned : AANoAliasImpl {
   static bool isFunctionMallocLike(Function &F);
 };
 
-ChangeStatus AANoAliasArgument::updateImpl(Attributor &A) {
-  Function &F = getAnchorScope();
-  Argument *Arg = cast<Argument>(getAnchoredValue());
-
-  AliasAnalysis AA = A.getAnalysis<AliasAnalysis>();
-
-  for (Instruction *I : InfoCache.getReadOrWriteInstsForFunction(*F)) {
-    for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i) {
-      Value *Operand = I->getOperand(i);
-      if (!Operand->getType()->isPointerTy())
-        continue;
-      if (AA.alias(Arg, Operand) == AliasAnalysis::NoAlias)
-        continue;
-
-      indicatePessimisticFixpoint();
-      return ChangeStatus::CHANGED;
-    }
-  }
-  return ChangeStatus::UNCHANGED;
-}
-
 bool AANoAliasReturned::isFunctionMallocLike(Function &F) {
   SmallSetVector<Value *, 8> FlowsToReturn;
-  for (BasicBlock &BB : *F)
+  for (BasicBlock &BB : F)
     if (ReturnInst *Ret = dyn_cast<ReturnInst>(BB.getTerminator()))
       FlowsToReturn.insert(Ret->getReturnValue());
 
@@ -402,7 +367,7 @@ ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
   Function &F = getAnchorScope();
 
   // Alreade noalias.
-  if (F->returnDoesNotAlias())
+  if (F.returnDoesNotAlias())
     return ChangeStatus::UNCHANGED;
 
   // We can infer and propagate function attributes only when wh know that the
@@ -411,7 +376,7 @@ ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
   //
   // We annotate noalias return values, which are only applicable to pointer
   // types
-  if (!F->hasExactDefinition() || !F->getReturnType()->isPointerTy() ||
+  if (!F.hasExactDefinition() || !F.getReturnType()->isPointerTy() ||
       !isFunctionMallocLike(F)) {
     indicatePessimisticFixpoint();
     return ChangeStatus::CHANGED;
@@ -561,6 +526,9 @@ ChangeStatus Attributor::run() {
 void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
+
+  // Every function return value might be marked noalias.
+  registerAA(*new AANoAliasReturned(F, InfoCache));
 
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
