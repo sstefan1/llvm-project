@@ -644,6 +644,28 @@ Pass *createAttributorLegacyPass();
 ///                       Abstract Attribute Classes
 /// ----------------------------------------------------------------------------
 
+/// An abstract attribute for the returned values of a function.
+struct AAReturnedValues : public AbstractAttribute {
+
+  /// See AbstractAttribute::AbstractAttribute(...).
+  AAReturnedValues(Function &F, InformationCache &InfoCache)
+      : AbstractAttribute(F, InfoCache) {}
+
+  /// Return the number of potential return values, -1 if unknown.
+  virtual size_t getNumReturnValues() const = 0;
+
+  /// Return true if \p V maybe returned by the underlying function.
+  ///
+  /// This method will return false until it cannot justify that answer anymore.
+  virtual bool maybeReturned(Value *V) const = 0;
+
+  /// See AbstractAttribute::getAttrKind()
+  virtual Attribute::AttrKind getAttrKind() const override { return ID; }
+
+  /// The identifier used by the Attributor for this class of attributes.
+  static constexpr Attribute::AttrKind ID = Attribute::Returned;
+};
+
 /// An abstract interface for all noalias attributes.
 struct AANoAlias : public AbstractAttribute {
 
