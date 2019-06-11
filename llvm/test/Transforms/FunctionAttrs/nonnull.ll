@@ -7,7 +7,6 @@ declare nonnull i8* @ret_nonnull()
 ; Return a pointer trivially nonnull (call return attribute)
 define i8* @test1() {
 ; CHECK: define nonnull i8* @test1
-; ATTRIBUTOR: define "noalias" i8* @test1
   %ret = call i8* @ret_nonnull()
   ret i8* %ret
 }
@@ -15,7 +14,6 @@ define i8* @test1() {
 ; Return a pointer trivially nonnull (argument attribute)
 define i8* @test2(i8* nonnull %p) {
 ; CHECK: define nonnull i8* @test2
-; ATTRIBUTOR: define "noalias" i8* @test2
   ret i8* %p
 }
 
@@ -30,7 +28,6 @@ define i8* @scc_binder() {
 
 define i8* @test3() {
 ; CHECK: define nonnull i8* @test3
-; ATTRIBUTOR: define "noalias" i8* @test3
   call i8* @scc_binder()
   %ret = call i8* @ret_nonnull()
   ret i8* %ret
@@ -73,7 +70,6 @@ define i8* @test5() {
 define i8* @test6() {
 entry:
 ; CHECK: define nonnull i8* @test6
-; ATTRIBUTOR: define "noalias" i8* @test6
   %ret = call i8* @ret_nonnull()
   br label %loop
 loop:
@@ -229,7 +225,6 @@ exc:
 }
 
 ; CHECK: define nonnull i32* @gep1(
-; ATTRIBUTOR: define "noalias" i32* @gep1(
 define i32* @gep1(i32* %p) {
   %q = getelementptr inbounds i32, i32* %p, i32 1
   ret i32* %q
@@ -238,13 +233,11 @@ define i32* @gep1(i32* %p) {
 define i32* @gep1_no_null_opt(i32* %p) #0 {
 ; Should't be able to derive nonnull based on gep.
 ; CHECK: define i32* @gep1_no_null_opt(
-; ATTRIBUTOR: define "noalias" i32* @gep1_no_null_opt(
   %q = getelementptr inbounds i32, i32* %p, i32 1
   ret i32* %q
 }
 
 ; CHECK: define i32 addrspace(3)* @gep2(
-; ATTRIBUTOR: define "noalias" i32 addrspace(3)* @gep2(
 define i32 addrspace(3)* @gep2(i32 addrspace(3)* %p) {
   %q = getelementptr inbounds i32, i32 addrspace(3)* %p, i32 1
   ret i32 addrspace(3)* %q
