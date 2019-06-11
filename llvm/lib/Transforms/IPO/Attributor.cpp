@@ -19,7 +19,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/Analysis/AliasAnalysis.h"
+// #include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/IR/Argument.h"
@@ -98,7 +99,7 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   switch (Attr.getKindAsEnum()) {
   case Attribute::Returned:
-    NumFnArgumentsReturned++;
+    NumFnArgumentReturned++;
     return;
   case Attribute::NoAlias:
     NumFnArgumentNoAlias++;
@@ -657,6 +658,7 @@ ChangeStatus AAReturnedValuesImpl::updateImpl(Attributor &A) {
 /// ------------------------ NoAlias Argument Attribute ------------------------
 
 struct AANoAliasImpl : AANoAlias, BooleanState {
+
   AANoAliasImpl(Value &V, InformationCache &InfoCache)
       : AANoAlias(V, InfoCache) {}
 
@@ -696,96 +698,52 @@ struct AANoAliasReturned : AANoAliasImpl {
     return MP_RETURNED;
   }
 
-  /// See AbstractAttribute::updateImpl(...).
-  virtual ChangeStatus updateImpl(Attributor &A) override;
+  /// See AbstractAttriubute::initialize(...).
+  void initialize(Attributor &A) override {
+    Function &F = getAnchorScope();
 
-  /// Tests whether a function is "malloc-like"
-  ///
-  /// A function is "malloc-like" if it returns either null or a pointer that
-  /// doesn't alias any other pointer visible to the caller.
-  static bool isFunctionMallocLike(Function &F);
-};
-
-bool AANoAliasReturned::isFunctionMallocLike(Function &F) {
-  SmallSetVector<Value *, 8> FlowsToReturn;
-  for (BasicBlock &BB : F)
-    if (ReturnInst *Ret = dyn_cast<ReturnInst>(BB.getTerminator()))
-      FlowsToReturn.insert(Ret->getReturnValue());
-
-  for (unsigned i = 0; i != FlowsToReturn.size(); ++i) {
-    Value *RetVal = FlowsToReturn[i];
-
-    if (Constant *C = dyn_cast<Constant>(RetVal)) {
-      if (!C->isNullValue() && !isa<UndefValue>(C))
-        return false;
-
-      continue;
+    // Already noalias.
+    if (F.returnDoesNotAlias()) {
+      indicatePessimisticFixpoint();
+      return;
     }
-
-    if (isa<Argument>(RetVal))
-      return false;
-
-    if (Instruction *RVI = dyn_cast<Instruction>(RetVal))
-      switch (RVI->getOpcode()) {
-      // Extend the analysis by looking upwards.
-      case Instruction::BitCast:
-      case Instruction::GetElementPtr:
-      case Instruction::AddrSpaceCast:
-        FlowsToReturn.insert(RVI->getOperand(0));
-        continue;
-      case Instruction::Select: {
-        SelectInst *SI = cast<SelectInst>(RVI);
-        FlowsToReturn.insert(SI->getTrueValue());
-        FlowsToReturn.insert(SI->getFalseValue());
-        continue;
-      }
-      case Instruction::PHI: {
-        PHINode *PN = cast<PHINode>(RVI);
-        for (Value *IncValue : PN->incoming_values())
-          FlowsToReturn.insert(IncValue);
-        continue;
-      }
-
-      // Check whether the pointer came from an allocation.
-      case Instruction::Alloca:
-        break;
-      case Instruction::Call:
-      case Instruction::Invoke: {
-        CallSite CS(RVI);
-        if (CS.hasRetAttr(Attribute::NoAlias))
-          break;
-        if (CS.getCalledFunction())
-          break;
-        LLVM_FALLTHROUGH;
-      }
-      default:
-        return false; // Did not come from an allocation.
-      }
-
-    if (PointerMayBeCaptured(RetVal, false, /*StoreCaptures=*/false))
-      return false;
   }
 
-  return true;
-}
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+};
 
 ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
   Function &F = getAnchorScope();
 
-  // Alreade noalias.
-  if (F.returnDoesNotAlias())
-    return ChangeStatus::UNCHANGED;
-
-  // We can infer and propagate function attributes only when wh know that the
-  // definition we'll get at link time is *exactly* the definition we see now.
-  // For more details, see GlobalValue::mayBeDerefined.
-  //
-  // We annotate noalias return values, which are only applicable to pointer
-  // types
-  if (!F.hasExactDefinition() || !F.getReturnType()->isPointerTy() ||
-      !isFunctionMallocLike(F)) {
-    indicatePessimisticFixpoint();
+  auto *AARetValImpl = A.getAAFor<AAReturnedValuesImpl>(*this, F);
+  if (!AARetValImpl)
     return ChangeStatus::CHANGED;
+
+  for (auto It = AARetValImpl->begin(); It != AARetValImpl->end(); ++It) {
+    Value *RV = It->first;
+    const SmallPtrSet<ReturnInst *, 2> ReturnInsts = It->second;
+
+    if (Constant *C = dyn_cast<Constant>(RV))
+      if (C->isNullValue() || isa<UndefValue>(C))
+        continue;
+
+    if (PointerMayBeCaptured(RV, false, false)) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+
+    for (auto RI : ReturnInsts) {
+      ImmutableCallSite ICS(RI);
+      auto *NoAliasReturnedAA = A.getAAFor<AANoAliasReturned>(*this, *RI);
+
+      if (ICS &&
+          (!NoAliasReturnedAA || !NoAliasReturnedAA->isAssumedNoAlias()) &&
+          !ICS.returnDoesNotAlias()) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
   }
 
   return ChangeStatus::UNCHANGED;
@@ -939,10 +897,11 @@ void Attributor::identifyDefaultAbstractAttributes(
     // though it is an argument attribute.
     if (!Whitelist || Whitelist->count(AAReturnedValues::ID))
       registerAA(*new AAReturnedValuesImpl(F, InfoCache));
-  }
 
-  // Every function return value might be marked noalias.
-  registerAA(*new AANoAliasReturned(F, InfoCache));
+    // Every function with pointer return type might be marked noalias.
+    if (ReturnType->isPointerTy())
+      registerAA(*new AANoAliasReturned(F, InfoCache));
+  }
 
   // Walk all instructions to find more attribute opportunities and also
   // interesting instructions that might be queried by abstract attributes
