@@ -19,8 +19,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
-// #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/IR/Argument.h"
@@ -704,7 +702,7 @@ struct AANoAliasReturned : AANoAliasImpl {
 
     // Already noalias.
     if (F.returnDoesNotAlias()) {
-      indicatePessimisticFixpoint();
+      indicateOptimisticFixpoint();
       return;
     }
   }
@@ -720,29 +718,28 @@ ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
   if (!AARetValImpl)
     return ChangeStatus::CHANGED;
 
-  for (auto It = AARetValImpl->begin(); It != AARetValImpl->end(); ++It) {
-    Value *RV = It->first;
-    const SmallPtrSet<ReturnInst *, 2> ReturnInsts = It->second;
+  for (auto &It : *AARetValImpl) {
+    Value *RV = It.first;
 
     if (Constant *C = dyn_cast<Constant>(RV))
       if (C->isNullValue() || isa<UndefValue>(C))
         continue;
 
-    if (PointerMayBeCaptured(RV, false, false)) {
+    if (PointerMayBeCaptured(RV, false, /* StoreCaptures */ true)) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;
     }
 
-    for (auto RI : ReturnInsts) {
-      ImmutableCallSite ICS(RI);
-      auto *NoAliasReturnedAA = A.getAAFor<AANoAliasReturned>(*this, *RI);
+    ImmutableCallSite ICS(RV);
+    if(ICS && ICS.returnDoesNotAlias())
+        continue;
 
-      if (ICS &&
-          (!NoAliasReturnedAA || !NoAliasReturnedAA->isAssumedNoAlias()) &&
-          !ICS.returnDoesNotAlias()) {
-        indicatePessimisticFixpoint();
-        return ChangeStatus::CHANGED;
-      }
+    /// FIXME: Check ReturnInsts for RV, for escape queries.
+    auto *NoAliasAA = A.getAAFor<AANoAlias>(*this, *RV);
+
+    if (!NoAliasAA || !NoAliasAA->isAssumedNoAlias()) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
     }
   }
 
@@ -895,12 +892,13 @@ void Attributor::identifyDefaultAbstractAttributes(
   if (!ReturnType->isVoidTy()) {
     // Argument attribute "returned" --- Create Only one per function even
     // though it is an argument attribute.
-    if (!Whitelist || Whitelist->count(AAReturnedValues::ID))
+    if (!Whitelist || Whitelist->count(AAReturnedValues::ID)) {
       registerAA(*new AAReturnedValuesImpl(F, InfoCache));
 
-    // Every function with pointer return type might be marked noalias.
-    if (ReturnType->isPointerTy())
-      registerAA(*new AANoAliasReturned(F, InfoCache));
+      // Every function with pointer return type might be marked noalias.
+      if(ReturnType->isPointerTy())
+          registerAA(*new AANoAliasReturned(F, InfoCache));
+    }
   }
 
   // Walk all instructions to find more attribute opportunities and also
