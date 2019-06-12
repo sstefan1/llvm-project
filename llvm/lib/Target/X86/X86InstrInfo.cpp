@@ -4685,6 +4685,7 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
                                                   &RI, MF);
       unsigned RCSize = TRI.getRegSizeInBits(*RC) / 8;
       if (Size < RCSize) {
+        // FIXME: Allow scalar intrinsic instructions like ADDSSrm_Int.
         // Check if it's safe to fold the load. If the size of the object is
         // narrower than the load width, then it's not.
         if (Opcode != X86::MOV64rm || RCSize != 8 || Size != 4)
@@ -4783,7 +4784,8 @@ MachineInstr *
 X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr &MI,
                                     ArrayRef<unsigned> Ops,
                                     MachineBasicBlock::iterator InsertPt,
-                                    int FrameIndex, LiveIntervals *LIS) const {
+                                    int FrameIndex, LiveIntervals *LIS,
+                                    VirtRegMap *VRM) const {
   // Check switch flag
   if (NoFusing)
     return nullptr;

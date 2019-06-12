@@ -135,6 +135,7 @@ PPC::PPC() {
   PltRel = R_PPC_JMP_SLOT;
   RelativeRel = R_PPC_RELATIVE;
   IRelativeRel = R_PPC_IRELATIVE;
+  SymbolicRel = R_PPC_ADDR32;
   GotBaseSymInGotPlt = false;
   GotHeaderEntriesNum = 3;
   GotPltHeaderEntriesNum = 0;
@@ -157,7 +158,7 @@ void PPC::writeGotHeader(uint8_t *Buf) const {
   // _GLOBAL_OFFSET_TABLE_[0] = _DYNAMIC
   // glibc stores _dl_runtime_resolve in _GLOBAL_OFFSET_TABLE_[1],
   // link_map in _GLOBAL_OFFSET_TABLE_[2].
-  write32(Buf, In.Dynamic->getVA());
+  write32(Buf, Main->Dynamic->getVA());
 }
 
 void PPC::writeGotPlt(uint8_t *Buf, const Symbol &S) const {
@@ -180,7 +181,7 @@ uint32_t PPC::getThunkSectionSpacing() const { return 0x2000000; }
 
 bool PPC::inBranchRange(RelType Type, uint64_t Src, uint64_t Dst) const {
   uint64_t Offset = Dst - Src;
-  if (Type == R_PPC_REL24 || R_PPC_PLTREL24)
+  if (Type == R_PPC_REL24 || Type == R_PPC_PLTREL24)
     return isInt<26>(Offset);
   llvm_unreachable("unsupported relocation type used in branch");
 }
@@ -288,7 +289,6 @@ void PPC::relocateOne(uint8_t *Loc, RelType Type, uint64_t Val) const {
     write16(Loc, Val);
     break;
   case R_PPC_ADDR32:
-  case R_PPC_GLOB_DAT:
   case R_PPC_REL32:
     write32(Loc, Val);
     break;

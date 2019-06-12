@@ -1,5 +1,6 @@
-// RUN: %clangxx -ftime-trace %s 2>&1 | grep "Time trace json-file dumped to" \
-// RUN:   | awk '{print $NF}' | xargs cat \
+// REQUIRES: shell
+// RUN: %clangxx -S -ftime-trace -mllvm --time-trace-granularity=0 -o %T/check-time-trace %s
+// RUN: cat %T/check-time-trace.json \
 // RUN:   | %python -c 'import json, sys; json.dump(json.loads(sys.stdin.read()), sys.stdout, sort_keys=True, indent=2)' \
 // RUN:   | FileCheck %s
 
@@ -7,7 +8,7 @@
 // CHECK: "args":
 // CHECK: "detail":
 // CHECK: "dur":
-// CHECK: "name": "Source"
+// CHECK: "name":
 // CHECK-NEXT: "ph":
 // CHECK-NEXT: "pid":
 // CHECK-NEXT: "tid":
@@ -15,9 +16,13 @@
 // CHECK: "name": "clang"
 // CHECK: "name": "process_name"
 
-#include <iostream>
+template <typename T>
+struct Struct {
+  T Num;
+};
 
 int main() {
-  std::cout << "Foo" << std::endl;
+  Struct<int> S;
+
   return 0;
 }

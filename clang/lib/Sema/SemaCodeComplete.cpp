@@ -84,6 +84,15 @@ private:
 
   public:
     ShadowMapEntry() : DeclOrVector(), SingleDeclIndex(0) {}
+    ShadowMapEntry(const ShadowMapEntry &) = delete;
+    ShadowMapEntry(ShadowMapEntry &&Move) { *this = std::move(Move); }
+    ShadowMapEntry &operator=(const ShadowMapEntry &) = delete;
+    ShadowMapEntry &operator=(ShadowMapEntry &&Move) {
+      SingleDeclIndex = Move.SingleDeclIndex;
+      DeclOrVector = Move.DeclOrVector;
+      Move.DeclOrVector = nullptr;
+      return *this;
+    }
 
     void Add(const NamedDecl *ND, unsigned Index) {
       if (DeclOrVector.isNull()) {
@@ -107,7 +116,7 @@ private:
           DeclIndexPair(ND, Index));
     }
 
-    void Destroy() {
+    ~ShadowMapEntry() {
       if (DeclIndexPairVector *Vec =
               DeclOrVector.dyn_cast<DeclIndexPairVector *>()) {
         delete Vec;
@@ -1348,11 +1357,6 @@ void ResultBuilder::EnterNewScope() { ShadowMaps.emplace_back(); }
 
 /// Exit from the current scope.
 void ResultBuilder::ExitScope() {
-  for (ShadowMap::iterator E = ShadowMaps.back().begin(),
-                           EEnd = ShadowMaps.back().end();
-       E != EEnd; ++E)
-    E->second.Destroy();
-
   ShadowMaps.pop_back();
 }
 
