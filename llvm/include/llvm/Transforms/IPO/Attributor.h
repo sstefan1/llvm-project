@@ -676,7 +676,7 @@ struct AANoAlias : public AbstractAttribute {
   /// Return true if we assume that the underlying value does not alias.
   virtual bool isAssumedNoAlias() const = 0;
 
-  /// Return true if we know that underlying value does not alias.
+  /// Return true if we know that underlying value is noalias.
   virtual bool isKnownNoAlias() const = 0;
 
   /// See AbastractState::getAttrKind().

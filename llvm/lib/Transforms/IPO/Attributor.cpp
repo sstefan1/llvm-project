@@ -725,16 +725,21 @@ ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
       if (C->isNullValue() || isa<UndefValue>(C))
         continue;
 
-    if (PointerMayBeCaptured(RV, false, /* StoreCaptures */ true)) {
+    /// For now, we can only deduce noalias if we have callsites.
+    /// FIXME: add more support.
+    ImmutableCallSite ICS(RV);
+    if(ICS && RV->returnDoesNotAlias())
+        continue;
+
+    /// FIXME: We can improve capture check in two ways:
+    /// 1. Use the AANoCapture facilities
+    /// 2. Use the location of associated return isnsts, for escape queries.
+    if (PointerMayBeCaptured(RV, /* ReturnCaptures */ false,
+                             /* StoreCaptures */ true)) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;
     }
 
-    ImmutableCallSite ICS(RV);
-    if(ICS && ICS.returnDoesNotAlias())
-        continue;
-
-    /// FIXME: Check ReturnInsts for RV, for escape queries.
     auto *NoAliasAA = A.getAAFor<AANoAlias>(*this, *RV);
 
     if (!NoAliasAA || !NoAliasAA->isAssumedNoAlias()) {
@@ -892,13 +897,13 @@ void Attributor::identifyDefaultAbstractAttributes(
   if (!ReturnType->isVoidTy()) {
     // Argument attribute "returned" --- Create Only one per function even
     // though it is an argument attribute.
-    if (!Whitelist || Whitelist->count(AAReturnedValues::ID)) {
+    if (!Whitelist || Whitelist->count(AAReturnedValues::ID))
       registerAA(*new AAReturnedValuesImpl(F, InfoCache));
 
       // Every function with pointer return type might be marked noalias.
-      if(ReturnType->isPointerTy())
-          registerAA(*new AANoAliasReturned(F, InfoCache));
-    }
+    if (ReturnType->isPointerTy() &&
+        (!Whitelist || Whitelist->count(AANoAliasReturned::ID)))
+      registerAA(*new AANoAliasReturned(F, InfoCache));
   }
 
   // Walk all instructions to find more attribute opportunities and also
