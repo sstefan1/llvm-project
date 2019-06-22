@@ -1521,6 +1521,7 @@ void Verifier::visitModuleFlagCGProfileEntry(const MDOperand &MDO) {
 static bool isFuncOnlyAttr(Attribute::AttrKind Kind) {
   switch (Kind) {
   case Attribute::NoReturn:
+  case Attribute::NoSync:
   case Attribute::NoCfCheck:
   case Attribute::NoUnwind:
   case Attribute::NoInline:
