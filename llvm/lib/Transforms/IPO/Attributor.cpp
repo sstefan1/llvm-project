@@ -452,6 +452,14 @@ public:
     return isValidState() ? ReturnedValues.size() : -1;
   }
 
+  /// Iterators to walk through all possibly returned values.
+  ///{
+  using const_iterator = decltype(ReturnedValues)::const_iterator;
+  const_iterator begin() const { return ReturnedValues.begin(); }
+  const_iterator end() const { return ReturnedValues.end(); }
+  ///}
+
+
   /// Return an assumed unique return value if a single candidate is found. If
   /// there cannot be one, return a nullptr. If it is not clear yet, return the
   /// Optional::NoneType.

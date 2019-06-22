@@ -86,7 +86,7 @@ static cl::opt<bool> EnableNonnullArgPropagation(
 
 static cl::opt<bool> DisableNoUnwindInference(
     "disable-nounwind-inference", cl::Hidden,
-    cl::desc("Stop inferring nounwind attribute during function-attrs pass")
+    cl::desc("Stop inferring nounwind attribute during function-attrs pass"),
     cl::init(true));
 
 namespace {
