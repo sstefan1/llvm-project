@@ -67,7 +67,7 @@ int3 f8(char16 x) {
   return __builtin_astype(x, int3);
 }
 
-//CHECK: define spir_func i32 addrspace(1)* @addr_cast(i32* readnone %[[x:.*]])
+//CHECK: define spir_func i32 addrspace(1)* @addr_cast(i32* readnone returned %[[x:.*]])
 //CHECK: %[[cast:.*]] = addrspacecast i32* %[[x]] to i32 addrspace(1)*
 //CHECK: ret i32 addrspace(1)* %[[cast]]
 global int* addr_cast(int *x) {
