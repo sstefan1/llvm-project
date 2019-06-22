@@ -49,6 +49,7 @@ STATISTIC(NumFnKnownReturns, "Number of function with known return values");
 STATISTIC(NumFnArgumentReturned,
           "Number of function arguments marked returned");
 STATISTIC(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
+STATISTIC(NumFnNoUnwind, "Number of functions marked nounwind");
 
 // TODO: Determine a good default value.
 //
@@ -95,12 +96,16 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
     return;
 
   switch (Attr.getKindAsEnum()) {
+  case Attribute::NoUnwind:
+    NumFnNoUnwind++;
+    return;
   case Attribute::Returned:
     NumFnArgumentReturned++;
     return;
   case Attribute::NoAlias:
     NumFnArgumentNoAlias++;
     return;
+ 
   default:
     return;
   }
@@ -766,6 +771,64 @@ ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
   return ChangeStatus::UNCHANGED;
 }
 
+/// -----------------------NoUnwind Function Attribute--------------------------
+
+struct AANoUnwindFunction : AANoUnwind, BooleanState {
+
+  AANoUnwindFunction(Function &F, InformationCache &InfoCache)
+      : AANoUnwind(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "nounwind" : "may-unwind";
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// See AANoUnwind::isAssumedNoUnwind().
+  virtual bool isAssumedNoUnwind() const override { return getAssumed(); }
+
+  /// See AANoUnwind::isKnownNoUnwind().
+  virtual bool isKnownNoUnwind() const override { return getKnown(); }
+};
+
+ChangeStatus AANoUnwindFunction::updateImpl(Attributor &A){
+    Function &F = getAnchorScope();
+
+   // The map from instruction opcodes to those instructions in the function.
+   auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+   auto Opcodes = {
+       (unsigned)Instruction::Invoke,      (unsigned)Instruction::CallBr,
+       (unsigned)Instruction::Call,        (unsigned)Instruction::CleanupRet,
+       (unsigned)Instruction::CatchSwitch, (unsigned)Instruction::Resume};
+
+   for (unsigned Opcode : Opcodes) {
+     for (Instruction *I : OpcodeInstMap[Opcode]) {
+       if(!I->mayThrow())
+           continue;
+
+       auto *NoUnwindAA = A.getAAFor<AANoUnwind>(*this, *I);
+
+       if (!NoUnwindAA || !NoUnwindAA->isAssumedNoUnwind()) {
+         indicatePessimisticFixpoint();
+         return ChangeStatus::CHANGED;
+       }
+     }
+   }
+   return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -938,7 +1001,16 @@ void Attributor::identifyDefaultAbstractAttributes(
     // Note: There are no concrete attributes now so this is initially empty.
     switch (I.getOpcode()) {
     default:
+      assert((!ImmutableCallSite(&I)) && (!isa<CallBase>(&I)) &&
+             "New call site/base instruction type needs to be known int the "
+             "attributor.");
       break;
+    case Instruction::Call:
+    case Instruction::CallBr:
+    case Instruction::Invoke:
+    case Instruction::CleanupRet:
+    case Instruction::CatchSwitch:
+    case Instruction::Resume:
     case Instruction::Ret: // ReturnInst are interesting for AAReturnedValues.
       IsInterestingOpcode = true;
     }
