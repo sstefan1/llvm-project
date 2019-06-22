@@ -19,6 +19,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
@@ -47,6 +48,7 @@ STATISTIC(NumFnUniqueReturned, "Number of function with unique return");
 STATISTIC(NumFnKnownReturns, "Number of function with known return values");
 STATISTIC(NumFnArgumentReturned,
           "Number of function arguments marked returned");
+STATISTIC(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
 
 // TODO: Determine a good default value.
 //
@@ -91,9 +93,13 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
 
   if (!Attr.isEnumAttribute())
     return;
+
   switch (Attr.getKindAsEnum()) {
   case Attribute::Returned:
     NumFnArgumentReturned++;
+    return;
+  case Attribute::NoAlias:
+    NumFnArgumentNoAlias++;
     return;
   default:
     return;
@@ -656,6 +662,110 @@ ChangeStatus AAReturnedValuesImpl::updateImpl(Attributor &A) {
   return Changed;
 }
 
+/// ------------------------ NoAlias Argument Attribute ------------------------
+
+struct AANoAliasImpl : AANoAlias, BooleanState {
+
+  AANoAliasImpl(Value &V, InformationCache &InfoCache)
+      : AANoAlias(V, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "noalias" : "may-alias";
+  }
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "noalias"));
+  }
+
+  /// See AANoAlias::isAssumedNoAlias().
+  virtual bool isAssumedNoAlias() const override { return getAssumed(); }
+
+  /// See AANoAlias::isKnowndNoAlias().
+  virtual bool isKnownNoAlias() const override { return getKnown(); }
+};
+
+/// NoAlias attribute for function return value.
+struct AANoAliasReturned : AANoAliasImpl {
+
+  AANoAliasReturned(Function &F, InformationCache &InfoCache)
+      : AANoAliasImpl(F, InfoCache) {}
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_RETURNED;
+  }
+
+  /// See AbstractAttriubute::initialize(...).
+  void initialize(Attributor &A) override {
+    Function &F = getAnchorScope();
+
+    // Already noalias.
+    if (F.returnDoesNotAlias()) {
+      indicateOptimisticFixpoint();
+      return;
+    }
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+};
+
+ChangeStatus AANoAliasReturned::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  auto *AARetValImpl = A.getAAFor<AAReturnedValuesImpl>(*this, F);
+  if (!AARetValImpl) {
+    indicatePessimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  for (auto &It : *AARetValImpl) {
+    Value *RV = It.first;
+
+    if (Constant *C = dyn_cast<Constant>(RV))
+      if (C->isNullValue() || isa<UndefValue>(C))
+        continue;
+
+    /// For now, we can only deduce noalias if we have call sites.
+    /// FIXME: add more support.
+    ImmutableCallSite ICS(RV);
+    if (!ICS) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+
+    if (ICS.returnDoesNotAlias())
+      continue;
+
+    /// FIXME: We can improve capture check in two ways:
+    /// 1. Use the AANoCapture facilities.
+    /// 2. Use the location of return insts for escape queries.
+    if (PointerMayBeCaptured(RV, /* ReturnCaptures */ false,
+                             /* StoreCaptures */ true)) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+
+    auto *NoAliasAA = A.getAAFor<AANoAlias>(*this, *RV);
+
+    if (!NoAliasAA || !NoAliasAA->isAssumedNoAlias()) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+  }
+
+  return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -805,6 +915,11 @@ void Attributor::identifyDefaultAbstractAttributes(
     // though it is an argument attribute.
     if (!Whitelist || Whitelist->count(AAReturnedValues::ID))
       registerAA(*new AAReturnedValuesImpl(F, InfoCache));
+
+    // Every function with pointer return type might be marked noalias.
+    if (ReturnType->isPointerTy() &&
+        (!Whitelist || Whitelist->count(AANoAliasReturned::ID)))
+      registerAA(*new AANoAliasReturned(F, InfoCache));
   }
 
   // Walk all instructions to find more attribute opportunities and also

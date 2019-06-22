@@ -1,5 +1,6 @@
 ; RUN: opt -S -functionattrs -enable-nonnull-arg-prop %s | FileCheck %s
 ; RUN: opt -S -passes=function-attrs -enable-nonnull-arg-prop %s | FileCheck %s
+; RUN: opt -S -attributor < %s | FileCheck %s --check-prefix=ATTRIBUTOR
 
 declare nonnull i8* @ret_nonnull()
 
@@ -20,6 +21,7 @@ define i8* @test2(i8* nonnull %p) {
 ; can we still mark the other one which is trivially nonnull
 define i8* @scc_binder() {
 ; CHECK: define i8* @scc_binder
+; ATTRIBUTOR: define "noalias" i8* @scc_binder
   call i8* @test3()
   ret i8* null
 }
@@ -36,12 +38,14 @@ define i8* @test3() {
 ; just never return period.)
 define i8* @test4_helper() {
 ; CHECK: define noalias nonnull i8* @test4_helper
+; ATTRIBUTOR: define "noalias" i8* @test4_helper
   %ret = call i8* @test4()
   ret i8* %ret
 }
 
 define i8* @test4() {
 ; CHECK: define noalias nonnull i8* @test4
+; ATTRIBUTOR: define "noalias" i8* @test4
   %ret = call i8* @test4_helper()
   ret i8* %ret
 }
@@ -50,12 +54,14 @@ define i8* @test4() {
 ; make sure we haven't marked them as nonnull.
 define i8* @test5_helper() {
 ; CHECK: define noalias i8* @test5_helper
+; ATTRIBUTOR: define "noalias" i8* @test5_helper
   %ret = call i8* @test5()
   ret i8* null
 }
 
 define i8* @test5() {
 ; CHECK: define noalias i8* @test5
+; ATTRIBUTOR: define "noalias" i8* @test5
   %ret = call i8* @test5_helper()
   ret i8* %ret
 }

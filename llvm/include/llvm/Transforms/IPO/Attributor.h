@@ -663,6 +663,26 @@ struct AAReturnedValues : public AbstractAttribute {
   static constexpr Attribute::AttrKind ID = Attribute::Returned;
 };
 
+/// An abstract interface for all noalias attributes.
+struct AANoAlias : public AbstractAttribute {
+
+  /// See AbstractAttribute::AbstractAttribute(...).
+  AANoAlias(Value &V, InformationCache &InfoCache)
+      : AbstractAttribute(V, InfoCache) {}
+
+  /// Return true if we assume that the underlying value does not alias.
+  virtual bool isAssumedNoAlias() const = 0;
+
+  /// Return true if we know that underlying value is noalias.
+  virtual bool isKnownNoAlias() const = 0;
+
+  /// See AbastractState::getAttrKind().
+  Attribute::AttrKind getAttrKind() const override { return ID; }
+
+  /// The identifier used by the Attributor for this class of attributes.
+  static constexpr Attribute::AttrKind ID = Attribute::NoAlias;
+};
+
 } // end namespace llvm
 
 #endif // LLVM_TRANSFORMS_IPO_FUNCTIONATTRS_H
