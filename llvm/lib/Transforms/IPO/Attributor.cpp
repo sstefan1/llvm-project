@@ -23,6 +23,7 @@
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -283,7 +284,7 @@ struct AANoSyncFunction : AANoSync, BooleanState {
   static bool isVolatile(Instruction *I);
 
   /// Helper function uset to check if intrinsic is volatile (memcpy, memmove, memset).
-  static bool isVolatileIntrinsic(Intstruction *I);
+  static bool isVolatileIntrinsic(Instruction *I);
 };
 
 bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
