@@ -650,8 +650,7 @@ struct AANoUnwind : public AbstractAttribute {
     /// See AbstractAttribute::getAttrKind()/
     virtual Attribute::AttrKind getAttrKind() const override { return ID; }
 
-    static constexpr Attribute::AttrKind ID =
-        Attribute::AttrKind(Attribute::NoUnwind);
+    static constexpr Attribute::AttrKind ID = Attribute::NoUnwind;
 
     /// Returns true if nounwind is assumed.
     virtual bool isAssumedNoUnwind() const = 0;
