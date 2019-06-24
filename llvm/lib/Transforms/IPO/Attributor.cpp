@@ -281,6 +281,9 @@ struct AANoSyncFunction : AANoSync, BooleanState {
 
   /// Helper function used to determine whether an instruction is volatile.
   static bool isVolatile(Instruction *I);
+
+  /// Helper function uset to check if intrinsic is volatile (memcpy, memmove, memset).
+  static bool isVolatileIntrinsic(Intstruction *I);
 };
 
 bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
