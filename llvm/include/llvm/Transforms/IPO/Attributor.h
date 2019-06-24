@@ -642,6 +642,26 @@ Pass *createAttributorLegacyPass();
 ///                       Abstract Attribute Classes
 /// ----------------------------------------------------------------------------
 
+struct AANoSync : public AbstractAttribute {
+  /// An abstract interface for all nosync attributes.
+  AANoSync(Value &V, InformationCache &InfoCache)
+      : AbstractAttribute(V, InfoCache) {}
+
+  /// See AbstractAttribute::getAttrKind().
+  virtual Attribute::AttrKind getAttrKind() const override {
+    return ID;
+  }
+
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::NoSync);
+
+  /// Returns true if "nosync" is assumed.
+  virtual bool isAssumedNoSync() const = 0;
+
+  /// Returns true if "nosync" is known.
+  virtual bool isKnownNoSync() const = 0;
+};
+
 } // end namespace llvm
 
 #endif // LLVM_TRANSFORMS_IPO_FUNCTIONATTRS_H
