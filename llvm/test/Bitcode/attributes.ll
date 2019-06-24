@@ -351,6 +351,11 @@ define void @f59() shadowcallstack
   ret void
 }
 
+; CHECK: define void @f60() #37
+define void @f60() nosync {
+  ret void
+}
+
 ; CHECK: attributes #0 = { noreturn }
 ; CHECK: attributes #1 = { nounwind }
 ; CHECK: attributes #2 = { readnone }
@@ -388,3 +393,4 @@ define void @f59() shadowcallstack
 ; CHECK: attributes #34 = { sanitize_hwaddress }
 ; CHECK: attributes #35 = { shadowcallstack }
 ; CHECK: attributes #36 = { nobuiltin }
+; CHECK: attributes #37 = { nosync }
