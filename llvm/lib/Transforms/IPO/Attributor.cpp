@@ -92,7 +92,7 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
     NumFnNoUnwind++;
     return;
   default:
-   return;
+    return;
   }
 }
 
@@ -277,170 +277,169 @@ struct AANoUnwindFunction : AANoUnwind, BooleanState {
   virtual bool isKnownNoUnwind() const override { return getKnown(); }
 };
 
-ChangeStatus AANoUnwindFunction::updateImpl(Attributor &A){
-    Function &F = getAnchorScope();
+ChangeStatus AANoUnwindFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
 
-   // The map from instruction opcodes to those instructions in the function.
-   auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
-   auto Opcodes = {
-       (unsigned)Instruction::Invoke,      (unsigned)Instruction::CallBr,
-       (unsigned)Instruction::Call,        (unsigned)Instruction::CleanupRet,
-       (unsigned)Instruction::CatchSwitch, (unsigned)Instruction::Resume};
+  // The map from instruction opcodes to those instructions in the function.
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  auto Opcodes = {
+      (unsigned)Instruction::Invoke,      (unsigned)Instruction::CallBr,
+      (unsigned)Instruction::Call,        (unsigned)Instruction::CleanupRet,
+      (unsigned)Instruction::CatchSwitch, (unsigned)Instruction::Resume};
 
-   for (unsigned Opcode : Opcodes) {
-     for (Instruction *I : OpcodeInstMap[Opcode]) {
-       if(!I->mayThrow())
-           continue;
+  for (unsigned Opcode : Opcodes) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (!I->mayThrow())
+        continue;
 
-       auto *NoUnwindAA = A.getAAFor<AANoUnwind>(*this, *I);
+      auto *NoUnwindAA = A.getAAFor<AANoUnwind>(*this, *I);
 
-       if (!NoUnwindAA || !NoUnwindAA->isAssumedNoUnwind()) {
-         indicatePessimisticFixpoint();
-         return ChangeStatus::CHANGED;
-       }
-     }
-   }
-   return ChangeStatus::UNCHANGED;
+      if (!NoUnwindAA || !NoUnwindAA->isAssumedNoUnwind()) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
+  }
+  return ChangeStatus::UNCHANGED;
 }
 
-   /// ----------------------------------------------------------------------------
-   ///                               Attributor
-   /// ----------------------------------------------------------------------------
+/// ----------------------------------------------------------------------------
+///                               Attributor
+/// ----------------------------------------------------------------------------
 
-   ChangeStatus Attributor::run() {
-     // Initialize all abstract attributes.
-     for (AbstractAttribute *AA : AllAbstractAttributes)
-       AA->initialize(*this);
+ChangeStatus Attributor::run() {
+  // Initialize all abstract attributes.
+  for (AbstractAttribute *AA : AllAbstractAttributes)
+    AA->initialize(*this);
 
-     LLVM_DEBUG(dbgs() << "[Attributor] Identified and initialized "
-                       << AllAbstractAttributes.size()
-                       << " abstract attributes.\n");
+  LLVM_DEBUG(dbgs() << "[Attributor] Identified and initialized "
+                    << AllAbstractAttributes.size()
+                    << " abstract attributes.\n");
 
-     // Now that all abstract attributes are collected and initialized we start
-     // the abstract analysis.
+  // Now that all abstract attributes are collected and initialized we start
+  // the abstract analysis.
 
-     unsigned IterationCounter = 1;
+  unsigned IterationCounter = 1;
 
-     SmallVector<AbstractAttribute *, 64> ChangedAAs;
-     SetVector<AbstractAttribute *> Worklist;
-     Worklist.insert(AllAbstractAttributes.begin(),
-                     AllAbstractAttributes.end());
+  SmallVector<AbstractAttribute *, 64> ChangedAAs;
+  SetVector<AbstractAttribute *> Worklist;
+  Worklist.insert(AllAbstractAttributes.begin(), AllAbstractAttributes.end());
 
-     do {
-       LLVM_DEBUG(dbgs() << "\n\n[Attributor] #Iteration: " << IterationCounter
-                         << ", Worklist size: " << Worklist.size() << "\n");
+  do {
+    LLVM_DEBUG(dbgs() << "\n\n[Attributor] #Iteration: " << IterationCounter
+                      << ", Worklist size: " << Worklist.size() << "\n");
 
-       // Add all abstract attributes that are potentially dependent on one that
-       // changed to the work list.
-       for (AbstractAttribute *ChangedAA : ChangedAAs) {
-         auto &QuerriedAAs = QueryMap[ChangedAA];
-         Worklist.insert(QuerriedAAs.begin(), QuerriedAAs.end());
-       }
+    // Add all abstract attributes that are potentially dependent on one that
+    // changed to the work list.
+    for (AbstractAttribute *ChangedAA : ChangedAAs) {
+      auto &QuerriedAAs = QueryMap[ChangedAA];
+      Worklist.insert(QuerriedAAs.begin(), QuerriedAAs.end());
+    }
 
-       // Reset the changed set.
-       ChangedAAs.clear();
+    // Reset the changed set.
+    ChangedAAs.clear();
 
-       // Update all abstract attribute in the work list and record the ones
-       // that changed.
-       for (AbstractAttribute *AA : Worklist)
-         if (AA->update(*this) == ChangeStatus::CHANGED)
-           ChangedAAs.push_back(AA);
+    // Update all abstract attribute in the work list and record the ones
+    // that changed.
+    for (AbstractAttribute *AA : Worklist)
+      if (AA->update(*this) == ChangeStatus::CHANGED)
+        ChangedAAs.push_back(AA);
 
-       // Reset the work list and repopulate with the changed abstract
-       // attributes. Note that dependent ones are added above.
-       Worklist.clear();
-       Worklist.insert(ChangedAAs.begin(), ChangedAAs.end());
+    // Reset the work list and repopulate with the changed abstract
+    // attributes. Note that dependent ones are added above.
+    Worklist.clear();
+    Worklist.insert(ChangedAAs.begin(), ChangedAAs.end());
 
-     } while (!Worklist.empty() && ++IterationCounter < MaxFixpointIterations);
+  } while (!Worklist.empty() && ++IterationCounter < MaxFixpointIterations);
 
-     LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration done after: "
-                       << IterationCounter << "/" << MaxFixpointIterations
-                       << " iterations\n");
+  LLVM_DEBUG(dbgs() << "\n[Attributor] Fixpoint iteration done after: "
+                    << IterationCounter << "/" << MaxFixpointIterations
+                    << " iterations\n");
 
-     bool FinishedAtFixpoint = Worklist.empty();
+  bool FinishedAtFixpoint = Worklist.empty();
 
-     // Reset abstract arguments not settled in a sound fixpoint by now. This
-     // happens when we stopped the fixpoint iteration early. Note that only the
-     // ones marked as "changed" *and* the ones transitively depending on them
-     // need to be reverted to a pessimistic state. Others might not be in a
-     // fixpoint state but we can use the optimistic results for them anyway.
-     SmallPtrSet<AbstractAttribute *, 32> Visited;
-     for (unsigned u = 0; u < ChangedAAs.size(); u++) {
-       AbstractAttribute *ChangedAA = ChangedAAs[u];
-       if (!Visited.insert(ChangedAA).second)
-         continue;
+  // Reset abstract arguments not settled in a sound fixpoint by now. This
+  // happens when we stopped the fixpoint iteration early. Note that only the
+  // ones marked as "changed" *and* the ones transitively depending on them
+  // need to be reverted to a pessimistic state. Others might not be in a
+  // fixpoint state but we can use the optimistic results for them anyway.
+  SmallPtrSet<AbstractAttribute *, 32> Visited;
+  for (unsigned u = 0; u < ChangedAAs.size(); u++) {
+    AbstractAttribute *ChangedAA = ChangedAAs[u];
+    if (!Visited.insert(ChangedAA).second)
+      continue;
 
-       AbstractState &State = ChangedAA->getState();
-       if (!State.isAtFixpoint()) {
-         State.indicatePessimisticFixpoint();
+    AbstractState &State = ChangedAA->getState();
+    if (!State.isAtFixpoint()) {
+      State.indicatePessimisticFixpoint();
 
-         NumAttributesTimedOut++;
-       }
+      NumAttributesTimedOut++;
+    }
 
-       auto &QuerriedAAs = QueryMap[ChangedAA];
-       ChangedAAs.append(QuerriedAAs.begin(), QuerriedAAs.end());
-     }
+    auto &QuerriedAAs = QueryMap[ChangedAA];
+    ChangedAAs.append(QuerriedAAs.begin(), QuerriedAAs.end());
+  }
 
-     LLVM_DEBUG({
-       if (!Visited.empty())
-         dbgs() << "\n[Attributor] Finalized " << Visited.size()
-                << " abstract attributes.\n";
-     });
+  LLVM_DEBUG({
+    if (!Visited.empty())
+      dbgs() << "\n[Attributor] Finalized " << Visited.size()
+             << " abstract attributes.\n";
+  });
 
-     unsigned NumManifested = 0;
-     unsigned NumAtFixpoint = 0;
-     ChangeStatus ManifestChange = ChangeStatus::UNCHANGED;
-     for (AbstractAttribute *AA : AllAbstractAttributes) {
-       AbstractState &State = AA->getState();
+  unsigned NumManifested = 0;
+  unsigned NumAtFixpoint = 0;
+  ChangeStatus ManifestChange = ChangeStatus::UNCHANGED;
+  for (AbstractAttribute *AA : AllAbstractAttributes) {
+    AbstractState &State = AA->getState();
 
-       // If there is not already a fixpoint reached, we can now take the
-       // optimistic state. This is correct because we enforced a pessimistic
-       // one on abstract attributes that were transitively dependent on a
-       // changed one already above.
-       if (!State.isAtFixpoint())
-         State.indicateOptimisticFixpoint();
+    // If there is not already a fixpoint reached, we can now take the
+    // optimistic state. This is correct because we enforced a pessimistic
+    // one on abstract attributes that were transitively dependent on a
+    // changed one already above.
+    if (!State.isAtFixpoint())
+      State.indicateOptimisticFixpoint();
 
-       // If the state is invalid, we do not try to manifest it.
-       if (!State.isValidState())
-         continue;
+    // If the state is invalid, we do not try to manifest it.
+    if (!State.isValidState())
+      continue;
 
-       // Manifest the state and record if we changed the IR.
-       ChangeStatus LocalChange = AA->manifest(*this);
-       ManifestChange = ManifestChange | LocalChange;
+    // Manifest the state and record if we changed the IR.
+    ChangeStatus LocalChange = AA->manifest(*this);
+    ManifestChange = ManifestChange | LocalChange;
 
-       NumAtFixpoint++;
-       NumManifested += (LocalChange == ChangeStatus::CHANGED);
-     }
+    NumAtFixpoint++;
+    NumManifested += (LocalChange == ChangeStatus::CHANGED);
+  }
 
-     (void)NumManifested;
-     (void)NumAtFixpoint;
-     LLVM_DEBUG(dbgs() << "\n[Attributor] Manifested " << NumManifested
-                       << " arguments while " << NumAtFixpoint
-                       << " were in a valid fixpoint state\n");
+  (void)NumManifested;
+  (void)NumAtFixpoint;
+  LLVM_DEBUG(dbgs() << "\n[Attributor] Manifested " << NumManifested
+                    << " arguments while " << NumAtFixpoint
+                    << " were in a valid fixpoint state\n");
 
-     // If verification is requested, we finished this run at a fixpoint, and
-     // the IR was changed, we re-run the whole fixpoint analysis, starting at
-     // re-initialization of the arguments. This re-run should not result in an
-     // IR change. Though, the (virtual) state of attributes at the end of the
-     // re-run might be more optimistic than the known state or the IR state if
-     // the better state cannot be manifested.
-     if (VerifyAttributor && FinishedAtFixpoint &&
-         ManifestChange == ChangeStatus::CHANGED) {
-       VerifyAttributor = false;
-       ChangeStatus VerifyStatus = run();
-       if (VerifyStatus != ChangeStatus::UNCHANGED)
-         llvm_unreachable(
-             "Attributor verification failed, re-run did result in an IR "
-             "change "
-             "even after a fixpoint was reached in the original run. (False "
-             "positives possible!)");
-       VerifyAttributor = true;
-     }
+  // If verification is requested, we finished this run at a fixpoint, and
+  // the IR was changed, we re-run the whole fixpoint analysis, starting at
+  // re-initialization of the arguments. This re-run should not result in an
+  // IR change. Though, the (virtual) state of attributes at the end of the
+  // re-run might be more optimistic than the known state or the IR state if
+  // the better state cannot be manifested.
+  if (VerifyAttributor && FinishedAtFixpoint &&
+      ManifestChange == ChangeStatus::CHANGED) {
+    VerifyAttributor = false;
+    ChangeStatus VerifyStatus = run();
+    if (VerifyStatus != ChangeStatus::UNCHANGED)
+      llvm_unreachable(
+          "Attributor verification failed, re-run did result in an IR "
+          "change "
+          "even after a fixpoint was reached in the original run. (False "
+          "positives possible!)");
+    VerifyAttributor = true;
+  }
 
-     NumAttributesManifested += NumManifested;
-     NumAttributesValidFixpoint += NumAtFixpoint;
+  NumAttributesManifested += NumManifested;
+  NumAttributesValidFixpoint += NumAtFixpoint;
 
-     return ManifestChange;
+  return ManifestChange;
 }
 
 void Attributor::identifyDefaultAbstractAttributes(
