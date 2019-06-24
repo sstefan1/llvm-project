@@ -335,7 +335,7 @@ bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
 }
 
 bool AANoSyncFunction::isVolatileIntrinsic(Instruction *I) {
-  if (auto *II = cast<IntrinsicInst>(I)) {
+  if (auto *II = dyn_cast<IntrinsicInst>(I)) {
     /// Element wise atomic memory intrinsics are skipped as they can't be
     /// volatile and can only be unordered.
     switch (II->getIntrinsicID()) {
