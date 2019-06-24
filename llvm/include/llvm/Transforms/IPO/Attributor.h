@@ -377,7 +377,7 @@ struct AbstractState {
 /// state will catch up with the assumed one, for a pessimistic fixpoint it is
 /// the other way around.
 struct IntegerState : public AbstractState {
-  /// Undrlying integer type, we assume 32 bits to be enough.
+  /// Underlying integer type, we assume 32 bits to be enough.
   using base_t = uint32_t;
 
   /// Initialize the (best) state.

@@ -330,7 +330,7 @@ bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
   return true;
 }
 
-bool AANoSyncFunction::isVolatile(Instruction *I) {
+bool AANoSyncFunction::isVolatileIntrinsic(Instruction *I) {
   if (auto *II = cast<IntrinsicInst>(I)) {
     /// Element wise atomic memory intrinsics are skipped as they can't be
     /// volatile and can only be unordered.
@@ -338,16 +338,21 @@ bool AANoSyncFunction::isVolatile(Instruction *I) {
     case Intrinsic::memset:
     case Intrinsic::memmove:
     case Intrinsic::memcpy: {
+      /// isvolatile is 4th argument in these intrinsics.
       Value *Arg = II->getOperand(3);
-      if (Arg->isIntegerTy(1) && Arg->getValue() == 1)
+      if (Arg->getType()->isIntegerTy(1) &&
+          cast<ConstantInt>(Arg)->getValue() == 1)
         return true;
+      break;
     }
     default:
-      llvm_unreachable("New potentially volatile intrinsics need to be "
-                       "known in the attributor.");
+      return false;
     }
   }
+  return false;
+}
 
+bool AANoSyncFunction::isVolatile(Instruction *I) {
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->isVolatile();
@@ -371,7 +376,8 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
     ImmutableCallSite ICS(I);
     auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
-    if (ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+    if (ICS && isVolatileIntrinsic(I) &&
+        (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
         !ICS.hasFnAttr(Attribute::NoSync)) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;

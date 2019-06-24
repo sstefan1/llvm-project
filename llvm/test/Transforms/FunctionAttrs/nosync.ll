@@ -1,8 +1,8 @@
 ; RUN: opt -functionattrs -S < %s | FileCheck %s --check-prefix=FNATTR
-; RUN: opt -attributor -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
+; RUN: opt -attributor -attributor-disable=false -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
-; Test cases designet for the nosync function attribute.
+; Test cases designed for the nosync function attribute.
 ; FIXME's are used to indicate problems and missing attributes.
 
 ; struct RT {
@@ -240,4 +240,14 @@ define void @bar(i32 *, %"struct.std::atomic"*) {
 8:                                                ; preds = %4
   fence acquire
   ret void
+}
+
+; TEST 11 - positive, checking volatile intrinsics.
+declare void @llvm.memcpy(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+
+; ATTRIBUTOR: Function Attrs: nosync
+; ATTRIBUTOR-NEXT: define i32 @square(i8* %ptr1, i8* %ptr2)
+define i32 @square(i8* %ptr1, i8* %ptr2) {
+    call void @llvm.memcpy(i8* %ptr1, i8* %ptr2, i32 8, i1 1    )
+    ret i32 4
 }
