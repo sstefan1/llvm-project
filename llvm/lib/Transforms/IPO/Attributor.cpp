@@ -380,8 +380,12 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
     ImmutableCallSite ICS(I);
     auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
-    if (ICS && isVolatileIntrinsic(I) &&
-        (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
+    if (isVolatileIntrinsic(I)) {
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
+
+    if (ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
         !ICS.hasFnAttr(Attribute::NoSync)) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;

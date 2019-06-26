@@ -1,5 +1,5 @@
 ; RUN: opt -functionattrs -S < %s | FileCheck %s --check-prefix=FNATTR
-; RUN: opt -attributor -attributor-disable=false -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
+; RUN: opt -attributor -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
 ; Test cases designed for the nosync function attribute.
@@ -96,11 +96,23 @@ define i32 @load_acquire(i32* nocapture readonly) norecurse nounwind uwtable {
 ; ATTRIBUTOR-NOT: nosync
 ; ATTRIBUTOR-NEXT: define void @load_release(i32* nocapture)
 define void @load_release(i32* nocapture) norecurse nounwind uwtable {
-  store atomic i32 10, i32* %0 release, align 4
+  store atomic volatile i32 10, i32* %0 release, align 4
   ret void
 }
 
-; TEST 6 - negative, should not deduce nosync
+; TEST 6 - negative volatile, relaxed atomic
+
+; FNATTR: Function Attrs: norecurse nounwind uwtable
+; FNATTR-NEXT: define void @load_volatile_release(i32* nocapture)
+; ATTRIBUTOR: Function Attrs: norecurse nounwind uwtable
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define void @load_volatile_release(i32* nocapture)
+define void @load_volatile_release(i32* nocapture) norecurse nounwind uwtable {
+  store atomic volatile i32 10, i32* %0 release, align 4
+  ret void
+}
+
+; TEST 7 - negative, should not deduce nosync
 ; volatile store.
 ; void volatile_store(volatile int *num) {
 ;   *num = 14;
@@ -116,7 +128,7 @@ define void @volatile_store(i32*) norecurse nounwind uwtable {
   ret void
 }
 
-; TEST 7 - negative, should not deduce nosync
+; TEST 8 - negative, should not deduce nosync
 ; volatile load.
 ; int volatile_load(volatile int *num) {
 ;   int n = *num;
@@ -133,7 +145,7 @@ define i32 @volatile_load(i32*) norecurse nounwind uwtable {
   ret i32 %2
 }
 
-; TEST 8
+; TEST 9
 
 ; FNATTR: Function Attrs: noinline nosync nounwind uwtable
 ; FNATTR-NEXT: declare void @nosync_function()
@@ -150,7 +162,7 @@ define void @call_nosync_function() nounwind uwtable noinline {
   ret void
 }
 
-; TEST 9 - negative, should not deduce nosync
+; TEST 10 - negative, should not deduce nosync
 
 ; FNATTR: Function Attrs: noinline nounwind uwtable
 ; FNATTR-NEXT: declare void @might_sync()
@@ -168,8 +180,8 @@ define void @call_might_sync() nounwind uwtable noinline {
   ret void
 }
 
-; TEST 10 - negative, should not deduce nosync
-; volatile operation in same scc. Call volatile_load defined in TEST 7.
+; TEST 11 - negative, should not deduce nosync
+; volatile operation in same scc. Call volatile_load defined in TEST 8.
 
 ; FNATTR: Function Attrs: noinline nounwind uwtable
 ; FNATTR-NEXT: define i32 @scc1(i32*)
@@ -192,7 +204,7 @@ define void @scc2(i32*) noinline nounwind uwtable {
   ret void;
 }
 
-; TEST 11 - fences, negative
+; TEST 12 - fences, negative
 ;
 ; void foo1(int *a, std::atomic<bool> flag){
 ;   *a = 100;
@@ -242,12 +254,32 @@ define void @bar(i32 *, %"struct.std::atomic"*) {
   ret void
 }
 
-; TEST 11 - positive, checking volatile intrinsics.
 declare void @llvm.memcpy(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+declare void @llvm.memset(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+declare float @llvm.cos(float %val)
+
+; TEST 13 - negative, checking volatile intrinsics.
+
+; ATTRIBUTOR-NEXT: define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2)
+define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2) {
+  call void @llvm.memcpy(i8* %ptr1, i8* %ptr2, i32 8, i1 1)
+}
+  ret i32 4
+
+; TEST 14 - positive, non-volatile intrinsic.
+
+; ATTRIBUTOR: Function Attrs: nosync
+; ATTRIBUTOR-NEXT: define i32 @memset_non_volatile(i8* %ptr1, i8* %ptr2)
+define i32 @memset_non_volatile(i8* %ptr1, i8* %ptr2) {
+  call void @llvm.memset(i8* %ptr1, i8* %ptr2, i32 8, i1 0)
+  ret i32 4
+}
+
+; TEST 15 - positive, non-volatile intrinsic.
 
 ; ATTRIBUTOR: Function Attrs: nosync
 ; ATTRIBUTOR-NEXT: define i32 @square(i8* %ptr1, i8* %ptr2)
-define i32 @square(i8* %ptr1, i8* %ptr2) {
-    call void @llvm.memcpy(i8* %ptr1, i8* %ptr2, i32 8, i1 1    )
-    ret i32 4
+define i32 @cos_test(float %x) {
+  call float @llvm.cos(float %x)
+  ret i32 4
 }
