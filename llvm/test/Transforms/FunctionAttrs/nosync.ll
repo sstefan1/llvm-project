@@ -1,5 +1,5 @@
 ; RUN: opt -functionattrs -S < %s | FileCheck %s --check-prefix=FNATTR
-; RUN: opt -attributor -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
+; RUN: opt -attributor -attributor-disable=false -S < %s | FileCheck %s --check-prefix=ATTRIBUTOR
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 
 ; Test cases designed for the nosync function attribute.
@@ -254,31 +254,63 @@ define void @bar(i32 *, %"struct.std::atomic"*) {
   ret void
 }
 
+; TEST 13 - Fence syncscope("singlethread") seq_cst
+; FNATTR: Function Attrs: norecurse nounwind
+; FNATTR-NEXT: define void @foo1_singlethread(i32* nocapture, %"struct.std::atomic"* nocapture)
+; ATTRIBUTOR: Function Attrs: nosync
+; ATTRIBUTOR: define void @foo1_singlethread(i32*, %"struct.std::atomic"*)
+define void @foo1_singlethread(i32*, %"struct.std::atomic"*) {
+  store i32 100, i32* %0, align 4
+  fence syncscope("singlethread") release
+  %3 = getelementptr inbounds %"struct.std::atomic", %"struct.std::atomic"* %1, i64 0, i32 0, i32 0
+  store atomic i8 1, i8* %3 monotonic, align 1
+  ret void
+}
+
+; FNATTR: Function Attrs: norecurse nounwind
+; FNATTR-NEXT: define void @bar_singlethread(i32* nocapture readnone, %"struct.std::atomic"* nocapture readonly)
+; ATTRIBUTOR: Function Attrs: nosync
+; ATTRIBUTOR: define void @bar_singlethread(i32*, %"struct.std::atomic"*)
+define void @bar_singlethread(i32 *, %"struct.std::atomic"*) {
+  %3 = getelementptr inbounds %"struct.std::atomic", %"struct.std::atomic"* %1, i64 0, i32 0, i32 0
+  br label %4
+
+4:                                                ; preds = %4, %2
+  %5 = load atomic i8, i8* %3  monotonic, align 1
+  %6 = and i8 %5, 1
+  %7 = icmp eq i8 %6, 0
+  br i1 %7, label %4, label %8
+
+8:                                                ; preds = %4
+  fence syncscope("singlethread") acquire
+  ret void
+}
+
 declare void @llvm.memcpy(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
-declare void @llvm.memset(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+declare void @llvm.memset(i8* %dest, i8 %val, i32 %len, i1 %isvolatile)
 declare float @llvm.cos(float %val)
 
-; TEST 13 - negative, checking volatile intrinsics.
+; TEST 14 - negative, checking volatile intrinsics.
 
-; ATTRIBUTOR-NEXT: define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2)
+; ATTRIBUTOR: define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2)
 define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2) {
   call void @llvm.memcpy(i8* %ptr1, i8* %ptr2, i32 8, i1 1)
-}
-  ret i32 4
-
-; TEST 14 - positive, non-volatile intrinsic.
-
-; ATTRIBUTOR: Function Attrs: nosync
-; ATTRIBUTOR-NEXT: define i32 @memset_non_volatile(i8* %ptr1, i8* %ptr2)
-define i32 @memset_non_volatile(i8* %ptr1, i8* %ptr2) {
-  call void @llvm.memset(i8* %ptr1, i8* %ptr2, i32 8, i1 0)
   ret i32 4
 }
 
 ; TEST 15 - positive, non-volatile intrinsic.
 
 ; ATTRIBUTOR: Function Attrs: nosync
-; ATTRIBUTOR-NEXT: define i32 @square(i8* %ptr1, i8* %ptr2)
+; ATTRIBUTOR-NEXT: define i32 @memset_non_volatile(i8* %ptr1, i8 %val)
+define i32 @memset_non_volatile(i8* %ptr1, i8 %val) {
+  call void @llvm.memset(i8* %ptr1, i8 %val, i32 8, i1 0)
+  ret i32 4
+}
+
+; TEST 16 - positive, non-volatile intrinsic.
+
+; ATTRIBUTOR: Function Attrs: nosync
+; ATTRIBUTOR-NEXT: define i32 @cos_test(float %x)
 define i32 @cos_test(float %x) {
   call float @llvm.cos(float %x)
   ret i32 4

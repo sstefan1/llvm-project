@@ -7,15 +7,15 @@
 
 ; TEST SCC test returning an integer value argument
 ;
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK: define i32 @sink_r0(i32 returned %r)
 ;
 ; FIXME: returned on %r missing:
-; CHECK: Function Attrs: noinline nounwind readnone uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readnone uwtable
 ; CHECK: define i32 @scc_r1(i32 %a, i32 %r, i32 %b)
 ;
 ; FIXME: returned on %r missing:
-; CHECK: Function Attrs: noinline nounwind readnone uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readnone uwtable
 ; CHECK: define i32 @scc_r2(i32 %a, i32 %b, i32 %r)
 ;
 ; int scc_r1(int a, int b, int r);
@@ -150,15 +150,15 @@ return:                                           ; preds = %cond.end, %if.then3
 
 ; TEST SCC test returning a pointer value argument
 ;
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK: define double* @ptr_sink_r0(double* readnone returned %r)
 ;
 ; FIXME: returned on %r missing:
-; CHECK: Function Attrs: noinline nounwind readnone uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readnone uwtable
 ; CHECK: define double* @ptr_scc_r1(double* %a, double* readnone %r, double* nocapture readnone %b)
 ;
 ; FIXME: returned on %r missing:
-; CHECK: Function Attrs: noinline nounwind readnone uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readnone uwtable
 ; CHECK: define double* @ptr_scc_r2(double* readnone %a, double* readnone %b, double* readnone %r)
 ;
 ; double* ptr_scc_r1(double* a, double* b, double* r);
@@ -244,7 +244,7 @@ return:                                           ; preds = %cond.end, %if.then3
 ; }
 ;
 ; FIXME: returned on %a missing:
-; CHECK: Function Attrs: noinline nounwind readonly uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readonly uwtable
 ; CHECK: define i32* @ret0(i32* readonly %a)
 define i32* @ret0(i32* %a) #0 {
 entry:
@@ -335,7 +335,7 @@ entry:
 ; }
 ;
 ; FIXME: returned on %b missing:
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK: define double @select_and_phi(double %b)
 define double @select_and_phi(double %b) #0 {
 entry:
@@ -363,7 +363,7 @@ if.end:                                           ; preds = %if.then, %entry
 ; }
 ;
 ; FIXME: returned on %b missing:
-; CHECK: Function Attrs: noinline nounwind readnone uwtable
+; CHECK: Function Attrs: noinline nosync nounwind readnone uwtable
 ; CHECK: define double @recursion_select_and_phi(i32 %a, double %b)
 define double @recursion_select_and_phi(i32 %a, double %b) #0 {
 entry:
@@ -390,7 +390,7 @@ if.end:                                           ; preds = %if.then, %entry
 ; }
 ;
 ; FIXME: returned on %b missing:
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK: define double* @bitcast(i32* readnone %b)
 define double* @bitcast(i32* %b) #0 {
 entry:
@@ -409,7 +409,7 @@ entry:
 ; }
 ;
 ; FIXME: returned on %b missing:
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK: define double* @bitcasts_select_and_phi(i32* readnone %b)
 define double* @bitcasts_select_and_phi(i32* %b) #0 {
 entry:
@@ -442,7 +442,7 @@ if.end:                                           ; preds = %if.then, %entry
 ;   /* return undef */
 ; }
 ;
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK:     define double* @ret_arg_arg_undef(i32* readnone %b)
 define double* @ret_arg_arg_undef(i32* %b) #0 {
 entry:
@@ -475,7 +475,7 @@ ret_undef:
 ;   /* return undef */
 ; }
 ;
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK:     define double* @ret_undef_arg_arg(i32* readnone %b)
 define double* @ret_undef_arg_arg(i32* %b) #0 {
 entry:
@@ -508,7 +508,7 @@ ret_arg1:
 ;   /* return undef */
 ; }
 ;
-; CHECK: Function Attrs: noinline norecurse nounwind readnone uwtable
+; CHECK: Function Attrs: noinline norecurse nosync nounwind readnone uwtable
 ; CHECK:     define double* @ret_undef_arg_undef(i32* readnone %b)
 define double* @ret_undef_arg_undef(i32* %b) #0 {
 entry:
@@ -576,8 +576,8 @@ r:
 attributes #0 = { noinline nounwind uwtable }
 
 ; CHECK-NOT: attributes #
-; CHECK-DAG: attributes #{{[0-9]*}} = { noinline norecurse nounwind readnone uwtable }
-; CHECK-DAG: attributes #{{[0-9]*}} = { noinline nounwind readnone uwtable }
-; CHECK-DAG: attributes #{{[0-9]*}} = { noinline nounwind readonly uwtable }
+; CHECK-DAG: attributes #{{[0-9]*}} = { noinline norecurse nosync nounwind readnone uwtable }
+; CHECK-DAG: attributes #{{[0-9]*}} = { noinline nosync nounwind readnone uwtable }
+; CHECK-DAG: attributes #{{[0-9]*}} = { noinline nosync nounwind readonly uwtable }
 ; CHECK-DAG: attributes #{{[0-9]*}} = { noinline nounwind uwtable }
 ; CHECK-NOT: attributes #
