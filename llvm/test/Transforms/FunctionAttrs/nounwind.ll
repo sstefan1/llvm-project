@@ -1,11 +1,11 @@
 ; RUN: opt < %s -functionattrs -S | FileCheck %s
-; RUN: opt < %S -attributor -S | FileCheck %s --check-prefix=ATTRIBUTOR
+; RUN: opt < %s -attributor -attributor-disable=false -S | FileCheck %s --check-prefix=ATTRIBUTOR
 
 ; TEST 1
-; CHECK: Function Attrs: norecurse, nounwind readnone
-; CHECK-NEXT: define i32 @leaf()
+; CHECK: Function Attrs: norecurse nounwind readnone
+; CHECK-NEXT: define i32 @foo1()
 ; ATTRIBUTOR: Function Attrs: nounwind
-; ATTRIBUTOR-NEXT: define i32 @leaf()
+; ATTRIBUTOR-NEXT: define i32 @foo1()
 define i32 @foo1() {
   ret i32 1
 }
@@ -31,14 +31,12 @@ define i32 @scc1_bar() {
   ret i32 1
 }
 
-; CHECK-NOT: nounwind
-; CHECK-NEXT: declare i32 @non_nounwind()
+; CHECK: declare i32 @non_nounwind()
 declare i32 @non_nounwind()
 
 ; TEST 4
-; CHECK-NOT: nounwind
-; CHECK-NEXT: define void @call_non_nounwind()
-; ATTRIBUTOR: define void @call_non_nounwind()
+; CHECK: define void @call_non_nounwind() {
+; ATTRIBUTOR: define void @call_non_nounwind() {
 define void @call_non_nounwind(){
     tail call i32 @non_nounwind()
     ret void
