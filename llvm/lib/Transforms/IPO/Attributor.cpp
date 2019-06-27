@@ -339,14 +339,14 @@ ChangeStatus Attributor::run() {
     // Reset the changed set.
     ChangedAAs.clear();
 
-    // Update all abstract attribute in the work list and record the ones
-    // that changed.
+    // Update all abstract attribute in the work list and record the ones that
+    // changed.
     for (AbstractAttribute *AA : Worklist)
       if (AA->update(*this) == ChangeStatus::CHANGED)
         ChangedAAs.push_back(AA);
 
-    // Reset the work list and repopulate with the changed abstract
-    // attributes. Note that dependent ones are added above.
+    // Reset the work list and repopulate with the changed abstract attributes.
+    // Note that dependent ones are added above.
     Worklist.clear();
     Worklist.insert(ChangedAAs.begin(), ChangedAAs.end());
 
@@ -393,9 +393,9 @@ ChangeStatus Attributor::run() {
     AbstractState &State = AA->getState();
 
     // If there is not already a fixpoint reached, we can now take the
-    // optimistic state. This is correct because we enforced a pessimistic
-    // one on abstract attributes that were transitively dependent on a
-    // changed one already above.
+    // optimistic state. This is correct because we enforced a pessimistic one
+    // on abstract attributes that were transitively dependent on a changed one
+    // already above.
     if (!State.isAtFixpoint())
       State.indicateOptimisticFixpoint();
 
@@ -417,20 +417,19 @@ ChangeStatus Attributor::run() {
                     << " arguments while " << NumAtFixpoint
                     << " were in a valid fixpoint state\n");
 
-  // If verification is requested, we finished this run at a fixpoint, and
-  // the IR was changed, we re-run the whole fixpoint analysis, starting at
-  // re-initialization of the arguments. This re-run should not result in an
-  // IR change. Though, the (virtual) state of attributes at the end of the
-  // re-run might be more optimistic than the known state or the IR state if
-  // the better state cannot be manifested.
+  // If verification is requested, we finished this run at a fixpoint, and the
+  // IR was changed, we re-run the whole fixpoint analysis, starting at
+  // re-initialization of the arguments. This re-run should not result in an IR
+  // change. Though, the (virtual) state of attributes at the end of the re-run
+  // might be more optimistic than the known state or the IR state if the better
+  // state cannot be manifested.
   if (VerifyAttributor && FinishedAtFixpoint &&
       ManifestChange == ChangeStatus::CHANGED) {
     VerifyAttributor = false;
     ChangeStatus VerifyStatus = run();
     if (VerifyStatus != ChangeStatus::UNCHANGED)
       llvm_unreachable(
-          "Attributor verification failed, re-run did result in an IR "
-          "change "
+          "Attributor verification failed, re-run did result in an IR change "
           "even after a fixpoint was reached in the original run. (False "
           "positives possible!)");
     VerifyAttributor = true;
