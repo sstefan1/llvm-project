@@ -701,24 +701,6 @@ struct AANoUnwind : public AbstractAttribute {
     virtual bool isKnownNoUnwind() const = 0;
 };
 
-struct AAIsAssumedDead : public AbstractAttribute {
-  /// An abstract interface for liveness abstract attribute.
-  AAIsAssumedDead(Value &V, InformationCache &InfoCache)
-      : AbstractAttribute(V, InfoCache) {}
-
-  /// See AbstractAttribute::getAttrKind()/
-  virtual Attribute::AttrKind getAttrKind() const override { return ID; }
-
-  static constexpr Attribute::AttrKind ID =
-      Attribute::AttrKind(Attribute::None + 1);
-
-  /// Returns true if nounwind is assumed.
-  virtual bool isAssumedDead() const = 0;
-
-  /// Returns true if nounwind is known.
-  virtual bool isKnownDead() const = 0;
-};
-
 } // end namespace llvm
 
 #endif // LLVM_TRANSFORMS_IPO_FUNCTIONATTRS_H
