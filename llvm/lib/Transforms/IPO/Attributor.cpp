@@ -21,8 +21,11 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/GlobalsModRef.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/CFG.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -50,6 +53,7 @@ STATISTIC(NumFnArgumentReturned,
           "Number of function arguments marked returned");
 STATISTIC(NumFnArgumentNoAlias, "Number of function arguments marked noalias");
 STATISTIC(NumFnNoUnwind, "Number of functions marked nounwind");
+STATISTIC(NumFnNoReturn, "Number of functions marked noreturn");
 
 // TODO: Determine a good default value.
 //
@@ -92,8 +96,12 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
   if (!AreStatisticsEnabled())
     return;
 
-  if (!Attr.isEnumAttribute())
-    return;
+  if (Attr.isStringAttribute()) {
+    StringRef StringAttr = Attr.getKindAsString();
+    if (StringAttr == Attr.getKindAsString())
+      if (!Attr.isEnumAttribute())
+        return;
+  }
 
   switch (Attr.getKindAsEnum()) {
   case Attribute::NoUnwind:
@@ -105,7 +113,9 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
   case Attribute::NoAlias:
     NumFnArgumentNoAlias++;
     return;
- 
+  case Attribute::NoReturn:
+    NumFnNoReturn++;
+    return;
   default:
     return;
   }
@@ -811,30 +821,293 @@ struct AANoUnwindFunction : AANoUnwind, BooleanState {
   virtual bool isKnownNoUnwind() const override { return getKnown(); }
 };
 
-ChangeStatus AANoUnwindFunction::updateImpl(Attributor &A){
-    Function &F = getAnchorScope();
+ChangeStatus AANoUnwindFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
 
-   // The map from instruction opcodes to those instructions in the function.
-   auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
-   auto Opcodes = {
-       (unsigned)Instruction::Invoke,      (unsigned)Instruction::CallBr,
-       (unsigned)Instruction::Call,        (unsigned)Instruction::CleanupRet,
-       (unsigned)Instruction::CatchSwitch, (unsigned)Instruction::Resume};
+  // The map from instruction opcodes to those instructions in the function.
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  auto Opcodes = {
+      (unsigned)Instruction::Invoke,      (unsigned)Instruction::CallBr,
+      (unsigned)Instruction::Call,        (unsigned)Instruction::CleanupRet,
+      (unsigned)Instruction::CatchSwitch, (unsigned)Instruction::Resume};
 
-   for (unsigned Opcode : Opcodes) {
-     for (Instruction *I : OpcodeInstMap[Opcode]) {
-       if(!I->mayThrow())
-           continue;
+  for (unsigned Opcode : Opcodes) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (!I->mayThrow())
+        continue;
 
-       auto *NoUnwindAA = A.getAAFor<AANoUnwind>(*this, *I);
+      auto *NoUnwindAA = A.getAAFor<AANoUnwind>(*this, *I);
 
-       if (!NoUnwindAA || !NoUnwindAA->isAssumedNoUnwind()) {
-         indicatePessimisticFixpoint();
-         return ChangeStatus::CHANGED;
-       }
-     }
-   }
-   return ChangeStatus::UNCHANGED;
+      if (!NoUnwindAA || !NoUnwindAA->isAssumedNoUnwind()) {
+        indicatePessimisticFixpoint();
+        return ChangeStatus::CHANGED;
+      }
+    }
+  }
+  return ChangeStatus::UNCHANGED;
+}
+
+/// ------------------ Function No-Return Attribute ----------------------------
+
+struct AANoReturn : public AbstractAttribute, BooleanState {
+
+  AANoReturn(Value &V, InformationCache &InfoCache)
+      : AbstractAttribute(V, InfoCache) {}
+
+  /// Return true if the underlying object is known to never return.
+  bool isKnownNoReturn() const { return getKnown(); }
+
+  /// Return true if the underlying object is assumed to never return.
+  bool isAssumedNoReturn() const { return getAssumed(); }
+
+  /// See AbstractAttribute::getState(...).
+  virtual AbstractState &getState() override { return *this; }
+
+  /// See AbstractAttribute::getState(...).
+  virtual const AbstractState &getState() const override { return *this; }
+
+  /// See AbstractAttribute::getAsStr()
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "no-return" : "may-return";
+  }
+
+  /// See AbstractAttribute::getAttrKind()
+  virtual Attribute::AttrKind getAttrKind() const override { return ID; }
+
+  /// The identifier used by the Attributor for this class of attributes.
+  static constexpr Attribute::AttrKind ID = Attribute::NoReturn;
+};
+
+struct AANoReturnFunction final : public AANoReturn {
+
+  AANoReturnFunction(Function &F, InformationCache &InfoCache) : AANoReturn(F, InfoCache) {}
+
+  /// See AbstractAttribute::initialize(...).
+  void initialize(Attributor &A) override {
+    Function &F = getAssociatedFunction();
+    if (F.hasFnAttribute(getAttrKind()))
+      indicateOptimisticFixpoint();
+  }
+
+  /// Return the associated function.
+  Function &getAssociatedFunction() {
+    return cast<Function>(getAnchoredValue());
+  }
+
+  /// Helper function that checks if we assume \p I to be dead.
+  bool isDeadInst(Attributor &A, const Instruction *I, bool &WasKnown) {
+    // TODO: This should probably live somewhere else.
+
+    const BasicBlock *BB = I->getParent();
+    if (BB != &BB->getParent()->getEntryBlock() &&
+        pred_begin(BB) == pred_end(BB))
+      return true;
+
+    // Check if we assume no-return for any "previous" instruction.
+    while ((I = I->getPrevNode())) {
+      const AANoReturn *PrevInstNoReturnAA = A.getAAFor<AANoReturn>(*this, *I);
+      if (!PrevInstNoReturnAA ||
+          !PrevInstNoReturnAA->getState().isValidState() ||
+          !PrevInstNoReturnAA->isAssumedNoReturn())
+        continue;
+
+      WasKnown &= PrevInstNoReturnAA->isKnownNoReturn();
+      return true;
+    }
+
+    return false;
+  }
+
+  /// Helper function that checks if we can justify no-return given a
+  /// returned value and the return instructions it can be returned through.
+  bool isValidReturnValue(Attributor &A, const Value *ReturnValue,
+                          const SmallPtrSet<ReturnInst *, 2> &ReturnInsts,
+                          bool &WasKnown) {
+
+    if (std::all_of(
+            ReturnInsts.begin(), ReturnInsts.end(),
+            [&](const ReturnInst *RI) { return isDeadInst(A, RI, WasKnown); }))
+      return true;
+
+    ImmutableCallSite ICS(ReturnValue);
+    if (ICS && ICS.getCalledFunction())
+      if (ICS.getCalledFunction()->hasFnAttribute(Attribute::NoReturn))
+        return true;
+
+    // Check if we assume no-return for the return value.
+    const AANoReturn *ReturnValueNoReturnAA =
+        A.getAAFor<AANoReturn>(*this, *ReturnValue);
+    if (!ReturnValueNoReturnAA ||
+        !ReturnValueNoReturnAA->getState().isValidState() ||
+        !ReturnValueNoReturnAA->isAssumedNoReturn())
+      return false;
+
+    WasKnown &= ReturnValueNoReturnAA->isKnownNoReturn();
+    return true;
+  }
+
+  /// See AbstractAttribute::updateImpl(Attributor &A).
+  virtual ChangeStatus updateImpl(Attributor &A) override {
+    Function &F = getAssociatedFunction();
+
+    // Flag to decide if we are at a fixpoint already.
+    bool EverythingWasKnown = true;
+
+    // Use the set of returned values to justify no-return.
+    const AAReturnedValuesImpl *RVAA =
+        A.getAAFor<AAReturnedValuesImpl>(*this, F);
+    if (RVAA && RVAA->getState().isValidState()) {
+
+      auto IsValidReturnValue =
+          [&](AAReturnedValuesImpl::const_iterator::value_type &It) {
+            return isValidReturnValue(A, It.first, It.second,
+                                      EverythingWasKnown);
+          };
+      if (std::all_of(RVAA->begin(), RVAA->end(), IsValidReturnValue)) {
+        if (EverythingWasKnown && RVAA->getState().isAtFixpoint())
+          indicateOptimisticFixpoint();
+        return ChangeStatus::UNCHANGED;
+      }
+    } else {
+      auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+      auto &ReturnInsts = OpcodeInstMap[Instruction::Ret];
+      if (std::all_of(ReturnInsts.begin(), ReturnInsts.end(),
+                      [&](const Instruction *RI) {
+                        return isDeadInst(A, RI, EverythingWasKnown);
+                      })) {
+        if (EverythingWasKnown)
+          indicateOptimisticFixpoint();
+        return ChangeStatus::UNCHANGED;
+      }
+    }
+
+    // Fallthrough if we failed to keep the no-capture state.
+    indicateOptimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+};
+
+/// -------------------AAIsAssumedDead Function Attribute-----------------------
+
+struct AAIsAssumedDeadFunction : AAIsAssumedDead, BooleanState {
+
+  AAIsAssumedDeadFunction(Function &F, InformationCache &InfoCache)
+      : AAIsAssumedDead(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "dead" : "maybe-dead";
+  }
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "assumeddead"));
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// See AAIsAssumedDead::isAssumedDead().
+  virtual bool isAssumedDead() const override { return getAssumed(); }
+
+  /// See AAIsAssumedDead::isKnownDead().
+  virtual bool isKnownDead() const override { return getKnown(); }
+
+  static LoopInfoBase<BasicBlock, Loop> getLoopInfo(Function &F);
+
+  static bool isDeadInst(Attributor &A, AbstractAttribute AAttr,
+                         const Instruction *I,
+                         LoopInfoBase<BasicBlock, Loop> LoopInfo);
+};
+
+LoopInfoBase<BasicBlock, Loop> AAIsAssumedDeadFunction::getLoopInfo(Function &F) {
+  auto DT = DominatorTree();
+  DT.recalculate(F);
+
+  auto LoopInfo = LoopInfoBase<BasicBlock, Loop>();
+  LoopInfo.releaseMemory();
+  LoopInfo.analyze(DT);
+  return LoopInfo;
+}
+
+bool AAIsAssumedDeadFunction::isDeadInst(
+    Attributor &A, AbstractAttribute AAttr, const Instruction *I,
+    LoopInfoBase<BasicBlock, Loop> LoopInfo) {
+
+  /// Check for infinite loops only if instruction is part of the loop.
+  for (auto &L : LoopInfo) {
+    if (L->contains(I))
+      continue;
+
+    SmallVector<BasicBlock *, 4> ExitBlocks;
+    L->getExitBlocks(ExitBlocks);
+
+    /// Not an infinite loop.
+    if (ExitBlocks.size() != 0)
+        continue;
+
+    bool BeforeLoop = false;
+    for (auto *BB : predecessors(*(L->block_begin()))) {
+      if (BB == I->getParent()) {
+        BeforeLoop = true;
+        break;
+      }
+    }
+
+    /// instruction is after the infinite loop, hence dead.
+    if (!BeforeLoop)
+      return true;
+  }
+
+  /// Check constant branches.
+  if (auto *BI = dyn_cast<BranchInst>(I))
+    if (BI->isConditional() && isa<Constant>(BI->getCondition()))
+      return true;
+
+  if (auto *RI = dyn_cast<ReturnInst>(I))
+    if (isa<Constant>(RI->getReturnValue()))
+      return true;
+
+  const BasicBlock *BB = I->getParent();
+  if (BB != &BB->getParent()->getEntryBlock() && pred_begin(BB) == pred_end(BB))
+    return true;
+
+  /// Check if we assume no-return for any "previous" instructions.
+  while ((I = I->getPrevNode())) {
+    const AANoReturn *PrevInstNoReturnAA = A.getAAFor<AANoReturn>(AAttr, *I);
+    if (!PrevInstNoReturnAA || !PrevInstNoReturnAA->getState().isValidState() ||
+        !PrevInstNoReturnAA->isAssumedNoReturn())
+      continue;
+
+    return true;
+  }
+
+  return false;
+}
+
+ChangeStatus AAIsAssumedDeadFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  auto LoopInfo = getLoopInfo(F);
+
+  return ChangeStatus::UNCHANGED;
 }
 
 /// ----------------------------------------------------------------------------
@@ -979,6 +1252,9 @@ void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
 
+  // Check for dead code in every function.
+  registerAA(*new AAIsAssumedDeadFunction(F, InfoCache));
+
   // Return attributes are only appropriate if the return type is non void.
   Type *ReturnType = F.getReturnType();
   if (!ReturnType->isVoidTy()) {
@@ -1091,17 +1367,20 @@ static bool runAttributorOnModule(Module &M) {
     //       information was found we could duplicate the functions that do not
     //       have an exact definition.
     if (!F.hasExactDefinition()) {
+      LLVM_DEBUG(dbgs() << "NOT EXACT...\n");
       NumFnWithoutExactDefinition++;
       continue;
     }
 
-    // For now we ignore naked and optnone functions.
-    if (F.hasFnAttribute(Attribute::Naked) ||
-        F.hasFnAttribute(Attribute::OptimizeNone))
-      continue;
+    // LLVM_DEBUG(dbgs() << "NAKED\n");
+    // // For now we ignore naked and optnone functions.
+    // if (F.hasFnAttribute(Attribute::Naked) ||
+        // F.hasFnAttribute(Attribute::OptimizeNone))
+      // continue;
 
     NumFnWithExactDefinition++;
 
+    LLVM_DEBUG(dbgs() << "calling identify...\n");
     // Populate the Attributor with abstract attribute opportunities in the
     // function and the information cache with IR information.
     A.identifyDefaultAbstractAttributes(F, InfoCache);
