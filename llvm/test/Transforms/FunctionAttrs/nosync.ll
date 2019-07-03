@@ -292,7 +292,9 @@ declare float @llvm.cos(float %val)
 
 ; TEST 14 - negative, checking volatile intrinsics.
 
-; ATTRIBUTOR: define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2)
+; ATTRIBUTOR: Function Attrs: nounwind
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2)
 define i32 @memcpy_volatile(i8* %ptr1, i8* %ptr2) {
   call void @llvm.memcpy(i8* %ptr1, i8* %ptr2, i32 8, i1 1)
   ret i32 4
@@ -309,9 +311,9 @@ define i32 @memset_non_volatile(i8* %ptr1, i8 %val) {
 
 ; TEST 16 - positive, non-volatile intrinsic.
 
-; Right now only nosync is deduced, so Function Attrs is not present.
-; Once present, ATTRIBUTOR-NOT: nosync check will be added.
-; ATTRIBUTOR: define i32 @inline_asm_test(i32 %x)
+; ATTRIBUTOR: Function Attrs: nounwind
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define i32 @inline_asm_test(i32 %x)
 define i32 @inline_asm_test(i32 %x) {
   call i32 asm "bswap $0", "=r,r"(i32 %x)
   ret i32 4

@@ -1480,8 +1480,13 @@ example:
     undefined behavior at runtime if the function ever does recurse.
 ``nosync``
     This function attribute indicates that the function does not communicate
-    (synchronize) with another thread. If the function does ever synchronize
-    with another thread, the behavior is undefined.
+    (synchronize) with another thread through memory or other well-defined means.
+    Synchronization is considered possible in the presence of `atomic` accesses
+    that enforce an order, thus not "unordered" and "monotonic", `volatile` accesses,
+    as well as `convergent` function calls. Note that through the latter non-memory
+    communication, e.g., cross-lane operations, is also considered synchronization.
+    If an annotated function does ever synchronize with another thread,
+    the behavior is undefined.
 ``nounwind``
     This function attribute indicates that the function never raises an
     exception. If the function does raise an exception, its runtime
@@ -1717,7 +1722,7 @@ example:
     on the stack such that they are adjacent to the stack protector guard.
     The specific layout rules are:
 
-    #. Large arrays and structures containing large arrays
+#. Large arrays and structures containing large arrays
        (``>= ssp-buffer-size``) are closest to the stack protector.
     #. Small arrays and structures containing small arrays
        (``< ssp-buffer-size``) are 2nd closest to the protector.
