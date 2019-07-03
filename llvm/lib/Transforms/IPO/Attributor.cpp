@@ -992,6 +992,131 @@ struct AANoReturnFunction final : public AANoReturn {
   }
 };
 
+/// -------------------AAIsDead Function Attribute-----------------------
+
+struct AAIsDeadFunction : AAIsDead, BooleanState {
+
+  AAIsDeadFunction(Function &F, InformationCache &InfoCache)
+      : AAIsDead(F, InfoCache) {}
+
+  /// See AbstractAttribute::getState()
+  /// {
+  AbstractState &getState() override { return *this; }
+  const AbstractState &getState() const override { return *this; }
+  /// }
+
+  /// See AbstractAttribute::getManifestPosition().
+  virtual ManifestPosition getManifestPosition() const override {
+    return MP_FUNCTION;
+  }
+
+  void initialize(Attributor &A) override {
+    Function &F = getAnchorScope();
+
+    for (BasicBlock &BB : F)
+      DeadBlocks.push_back(&BB);
+  }
+
+  virtual const std::string getAsStr() const override {
+    return getAssumed() ? "dead" : "maybe-dead";
+  }
+
+  /// Return deduced attributes in \p Attrs.
+  virtual void
+  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
+    LLVMContext &Ctx = AnchoredVal.getContext();
+    Attrs.emplace_back(Attribute::get(Ctx, "assumeddead"));
+  }
+
+  /// See AbstractAttribute::updateImpl(...).
+  virtual ChangeStatus updateImpl(Attributor &A) override;
+
+  /// See AAIsDead::isAssumedDead().
+  virtual bool isAssumedDead() const override { return getAssumed(); }
+
+  /// See AAIsDead::isKnownDead().
+  virtual bool isKnownDead() const override { return getKnown(); }
+
+  /// Collection of all dead BasicBlocks.
+  SmallVector<BasicBlock *, 8> DeadBlocks;
+
+  /// Helper function to get LoopInfo for a Function.
+  static LoopInfoBase<BasicBlock, Loop> getLoopInfo(Function &F);
+
+  /// Get first infinite loop in a funciton, if it exists.
+  static Loop *getInfLoop(LoopInfoBase<BasicBlock, Loop> LoopInfo);
+};
+
+LoopInfoBase<BasicBlock, Loop> AAIsDeadFunction::getLoopInfo(Function &F) {
+  auto DT = DominatorTree();
+  DT.recalculate(F);
+
+  auto LoopInfo = LoopInfoBase<BasicBlock, Loop>();
+  LoopInfo.releaseMemory();
+  LoopInfo.analyze(DT);
+  return LoopInfo;
+}
+
+Loop *AAIsDeadFunction::getInfLoop(LoopInfoBase<BasicBlock, Loop> LoopInfo){
+  for (auto *L : LoopInfo) {
+    SmallVector<BasicBlock *, 4> ExitBlocks;
+    L->getExitBlocks(ExitBlocks);
+
+    // Not an infinite loop.
+    if (ExitBlocks.size() != 0)
+      continue;
+
+    // infinite loop.
+    return L;
+  }
+  return nullptr;
+}
+
+ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
+  Function &F = getAnchorScope();
+
+  Loop *InfLoop = getInfLoop(getLoopInfo(F));
+  bool HasNoReturn = false;
+
+  for (auto BB = DeadBlocks.begin(); BB != DeadBlocks.end(); ++BB) {
+    for (BasicBlock *PredBB : predecessors(*BB)) {
+     for (Instruction &I : *PredBB) {
+        ImmutableCallSite ICS(&I);
+        auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, I);
+
+        if (ICS && (!NoReturnAA || !NoReturnAA->isAssumedNoReturn()) &&
+            !ICS.hasFnAttr(Attribute::NoReturn))
+          continue;
+
+        /// This block is dead.
+        HasNoReturn = true;
+        break;
+      }
+
+      // if at least one predecessor doesn't have noreturn call and function
+      // does not have an infinite loop, the current block is not dead
+      if (!HasNoReturn && !InfLoop)
+        DeadBlocks.erase(BB);
+
+      // if we have an infinite loop, make sure the current BB is before the
+      // loop, therefore not dead.
+      if (!HasNoReturn && InfLoop)
+        for (auto *LoopPredBB : predecessors(*(InfLoop->block_begin())))
+          if (LoopPredBB == *BB)
+            DeadBlocks.erase(BB);
+    }
+  }
+
+  // No dead code, no need for AAIsDead.
+  if (DeadBlocks.size() == 0) {
+    indicatePessimisticFixpoint();
+    return ChangeStatus::CHANGED;
+  }
+
+  indicateOptimisticFixpoint();
+  return ChangeStatus::UNCHANGED;
+}
+
 /// ----------------------------------------------------------------------------
 ///                               Attributor
 /// ----------------------------------------------------------------------------
@@ -1133,6 +1258,9 @@ ChangeStatus Attributor::run() {
 void Attributor::identifyDefaultAbstractAttributes(
     Function &F, InformationCache &InfoCache,
     DenseSet</* Attribute::AttrKind */ unsigned> *Whitelist) {
+
+  // Check for dead BasicBlocks in every function.
+  registerAA(*new AAIsDeadFunction(F, InfoCache));
 
   // Return attributes are only appropriate if the return type is non void.
   Type *ReturnType = F.getReturnType();
