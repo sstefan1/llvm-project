@@ -309,9 +309,10 @@ define i32 @memset_non_volatile(i8* %ptr1, i8 %val) {
 
 ; TEST 16 - positive, non-volatile intrinsic.
 
-; ATTRIBUTOR: Function Attrs: nosync
-; ATTRIBUTOR-NEXT: define i32 @cos_test(float %x)
-define i32 @cos_test(float %x) {
-  call float @llvm.cos(float %x)
+; Right now only nosync is deduced, so Function Attrs is not present.
+; Once present, ATTRIBUTOR-NOT: nosync check will be added.
+; ATTRIBUTOR: define i32 @inline_asm_test(i32 %x)
+define i32 @inline_asm_test(i32 %x) {
+  call i32 asm "bswap $0", "=r,r"(i32 %x)
   ret i32 4
 }
