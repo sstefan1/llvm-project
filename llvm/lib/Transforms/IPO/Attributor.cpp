@@ -1013,19 +1013,23 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   void initialize(Attributor &A) override {
     Function &F = getAnchorScope();
 
-    for (BasicBlock &BB : F)
-      DeadBlocks.push_back(&BB);
+    for (Instruction &I : instructions(&F)) {
+      ImmutableCallSite ICS(&I);
+      auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, I);
+
+      if (ICS &&
+          (NoReturnAA || NoReturnAA->isAssumedNoReturn() ||
+           NoReturnAA->isKnownNoReturn()) &&
+          ICS.hasFnAttr(Attribute::NoReturn)) {
+        NoReturnCalls.insert(&I);
+        /// If the block contains a noreturn call, it is assumed dead.
+        AssumedDeadBlocks.insert(I.getParent());
+      }
+    }
   }
 
   virtual const std::string getAsStr() const override {
     return getAssumed() ? "dead" : "maybe-dead";
-  }
-
-  /// Return deduced attributes in \p Attrs.
-  virtual void
-  getDeducedAttributes(SmallVectorImpl<Attribute> &Attrs) const override {
-    LLVMContext &Ctx = AnchoredVal.getContext();
-    Attrs.emplace_back(Attribute::get(Ctx, "assumeddead"));
   }
 
   /// See AbstractAttribute::updateImpl(...).
@@ -1037,83 +1041,71 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   /// See AAIsDead::isKnownDead().
   virtual bool isKnownDead() const override { return getKnown(); }
 
-  /// Collection of all dead BasicBlocks.
-  SmallVector<BasicBlock *, 8> DeadBlocks;
+  /// Collection of all assumed dead BasicBlocks.
+  DenseSet<BasicBlock *> AssumedDeadBlocks;
 
-  /// Helper function to get LoopInfo for a Function.
-  static LoopInfoBase<BasicBlock, Loop> getLoopInfo(Function &F);
+  /// Collection of all assumed live BasicBlocks.
+  DenseSet<BasicBlock *> AssumedLiveBlocks;
 
-  /// Get first infinite loop in a funciton, if it exists.
-  static Loop *getInfLoop(LoopInfoBase<BasicBlock, Loop> LoopInfo);
+  /// Collection of calls with noreturn attribute, assumed or knwon.
+  DenseSet<Instruction *> NoReturnCalls;
 };
-
-LoopInfoBase<BasicBlock, Loop> AAIsDeadFunction::getLoopInfo(Function &F) {
-  auto DT = DominatorTree();
-  DT.recalculate(F);
-
-  auto LoopInfo = LoopInfoBase<BasicBlock, Loop>();
-  LoopInfo.releaseMemory();
-  LoopInfo.analyze(DT);
-  return LoopInfo;
-}
-
-Loop *AAIsDeadFunction::getInfLoop(LoopInfoBase<BasicBlock, Loop> LoopInfo){
-  for (auto *L : LoopInfo) {
-    SmallVector<BasicBlock *, 4> ExitBlocks;
-    L->getExitBlocks(ExitBlocks);
-
-    // Not an infinite loop.
-    if (ExitBlocks.size() != 0)
-      continue;
-
-    // infinite loop.
-    return L;
-  }
-  return nullptr;
-}
 
 ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
   Function &F = getAnchorScope();
 
-  Loop *InfLoop = getInfLoop(getLoopInfo(F));
-  bool HasNoReturn = false;
+  for (auto *I : NoReturnCalls) {
+    ImmutableCallSite ICS(I);
+    auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
 
-  for (auto BB = DeadBlocks.begin(); BB != DeadBlocks.end(); ++BB) {
-    for (BasicBlock *PredBB : predecessors(*BB)) {
-     for (Instruction &I : *PredBB) {
-        ImmutableCallSite ICS(&I);
-        auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, I);
+    if (ICS &&
+        (NoReturnAA || NoReturnAA->isAssumedNoReturn() ||
+         NoReturnAA->isKnownNoReturn()) &&
+        ICS.hasFnAttr(Attribute::NoReturn))
+      continue;
 
-        if (ICS && (!NoReturnAA || !NoReturnAA->isAssumedNoReturn()) &&
-            !ICS.hasFnAttr(Attribute::NoReturn))
-          continue;
-
-        /// This block is dead.
-        HasNoReturn = true;
-        break;
+    /// Check if we can assume this block to be live.
+    BasicBlock *BB = I->getParent();
+    for (BasicBlock *PredBB : predecessors(BB)) {
+      /// If atleast one block is live, current block is also live.
+      if (AssumedDeadBlocks.find(PredBB) != AssumedDeadBlocks.end()) {
+        AssumedDeadBlocks.erase(BB);
+        AssumedLiveBlocks.insert(BB);
       }
-
-      // if at least one predecessor doesn't have noreturn call and function
-      // does not have an infinite loop, the current block is not dead
-      if (!HasNoReturn && !InfLoop)
-        DeadBlocks.erase(BB);
-
-      // if we have an infinite loop, make sure the current BB is before the
-      // loop, therefore not dead.
-      if (!HasNoReturn && InfLoop)
-        for (auto *LoopPredBB : predecessors(*(InfLoop->block_begin())))
-          if (LoopPredBB == *BB)
-            DeadBlocks.erase(BB);
     }
   }
 
-  // No dead code, no need for AAIsDead.
-  if (DeadBlocks.size() == 0) {
-    indicatePessimisticFixpoint();
-    return ChangeStatus::CHANGED;
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  auto Opcodes = {(unsigned)Instruction::Invoke, (unsigned)Instruction::Call,
+                  (unsigned)Instruction::CallBr};
+
+  /// Check if some other calls became noreturn in the mean time.
+  for (unsigned Opcode : Opcodes) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (NoReturnCalls.find(I) != NoReturnCalls.end())
+        continue;
+
+      ImmutableCallSite ICS(I);
+      auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
+
+      if (ICS &&
+          (!NoReturnAA || !NoReturnAA->isAssumedNoReturn() ||
+           !NoReturnAA->isKnownNoReturn()) &&
+          !ICS.hasFnAttr(Attribute::NoReturn))
+        continue;
+
+      /// Check if we can assume this block to be live.
+      BasicBlock *BB = I->getParent();
+      for (BasicBlock *PredBB : predecessors(BB)) {
+        /// If atleast one block is live, current block is also live.
+        if (AssumedDeadBlocks.find(PredBB) != AssumedDeadBlocks.end()) {
+          AssumedDeadBlocks.erase(BB);
+          AssumedLiveBlocks.insert(BB);
+        }
+      }
+    }
   }
 
-  indicateOptimisticFixpoint();
   return ChangeStatus::UNCHANGED;
 }
 

@@ -683,40 +683,44 @@ struct AANoAlias : public AbstractAttribute {
   static constexpr Attribute::AttrKind ID = Attribute::NoAlias;
 };
 
+/// An abstract interface for all nosync attributes.
 struct AANoUnwind : public AbstractAttribute {
-    /// An abstract interface for all nosync attributes.
-    AANoUnwind(Value &V, InformationCache &InfoCache)
-        : AbstractAttribute(V, InfoCache) {}
 
-    /// See AbstractAttribute::getAttrKind()/
-    virtual Attribute::AttrKind getAttrKind() const override { return ID; }
+  /// See AbstractAttribute::AbstractAttribute(...).
+  AANoUnwind(Value &V, InformationCache &InfoCache)
+      : AbstractAttribute(V, InfoCache) {}
 
-    static constexpr Attribute::AttrKind ID =
-        Attribute::AttrKind(Attribute::NoUnwind);
+  /// See AbstractAttribute::getAttrKind()/
+  virtual Attribute::AttrKind getAttrKind() const override { return ID; }
 
-    /// Returns true if nounwind is assumed.
-    virtual bool isAssumedNoUnwind() const = 0;
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::NoUnwind);
 
-    /// Returns true if nounwind is known.
-    virtual bool isKnownNoUnwind() const = 0;
+  /// Returns true if nounwind is assumed.
+  virtual bool isAssumedNoUnwind() const = 0;
+
+  /// Returns true if nounwind is known.
+  virtual bool isKnownNoUnwind() const = 0;
 };
 
+/// An abstract interface for liveness abstract attribute.
 struct AAIsDead : public AbstractAttribute {
-    /// An abstract interface for liveness abstract attribute.
-    AAIsDead(Value &V, InformationCache &InfoCache)
-        : AbstractAttribute(V, InfoCache) {}
 
-    /// See AbstractAttribute::getAttrKind()/
-    virtual Attribute::AttrKind getAttrKind() const override { return ID; }
+  /// See AbstractAttribute::AbstractAttribute(...).
+  AAIsDead(Value &V, InformationCache &InfoCache)
+      : AbstractAttribute(V, InfoCache) {}
 
-    static constexpr Attribute::AttrKind ID =
-        Attribute::AttrKind(Attribute::None + 1);
+  /// See AbstractAttribute::getAttrKind()
+  virtual Attribute::AttrKind getAttrKind() const override { return ID; }
 
-    /// Returns true if nounwind is assumed.
-    virtual bool isAssumedDead() const = 0;
+  static constexpr Attribute::AttrKind ID =
+      Attribute::AttrKind(Attribute::EndAttrKinds + 1);
 
-    /// Returns true if nounwind is known.
-    virtual bool isKnownDead() const = 0;
+  /// Returns true if nounwind is assumed.
+  virtual bool isAssumedDead() const = 0;
+
+  /// Returns true if nounwind is known.
+  virtual bool isKnownDead() const = 0;
 };
 
 } // end namespace llvm
