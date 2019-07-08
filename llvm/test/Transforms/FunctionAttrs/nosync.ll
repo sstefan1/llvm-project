@@ -21,7 +21,7 @@ target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 ; }
 
 ; TEST 1
-; attribute readnone implies nosync
+; non-convergent and readnone implies nosync
 %struct.RT = type { i8, [10 x [20 x i32]], i8 }
 %struct.ST = type { i32, double, %struct.RT }
 
@@ -288,7 +288,6 @@ define void @bar_singlethread(i32 *, %"struct.std::atomic"*) {
 
 declare void @llvm.memcpy(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
 declare void @llvm.memset(i8* %dest, i8 %val, i32 %len, i1 %isvolatile)
-declare float @llvm.cos(float %val)
 
 ; TEST 14 - negative, checking volatile intrinsics.
 
@@ -316,5 +315,41 @@ define i32 @memset_non_volatile(i8* %ptr1, i8 %val) {
 ; ATTRIBUTOR-NEXT: define i32 @inline_asm_test(i32 %x)
 define i32 @inline_asm_test(i32 %x) {
   call i32 asm "bswap $0", "=r,r"(i32 %x)
+  ret i32 4
+}
+
+declare void @readnone_test() convergent readnone
+
+; ATTRIBUTOR: Function Attrs: nounwind
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define i32 @convergent_readnone()
+; TEST 17 - negative. Convergent
+define void @convergent_readnone(){
+    call void @readnone_test()
+    ret void
+}
+
+declare void @llvm.x86.sse2.clflush(i8*)
+@a = common global i32 0, align 4
+
+; TEST 18 - negative. Synchronizing intrinsic
+
+; ATTRIBUTOR: Function Attrs: nounwind
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define i32 @i_totally_sync()
+define void @i_totally_sync() {
+  tail call void @llvm.x86.sse2.clflush(i8* bitcast (i32* @a to i8*))
+  ret void
+}
+
+declare float @llvm.cos(float %val) readnone
+
+; TEST 19 - positive, readnone & non-convergent intrinsic.
+
+; ATTRIBUTOR: Function Attrs: nounwind
+; ATTRIBUTOR-NOT: nosync
+; ATTRIBUTOR-NEXT: define i32 @cos_test(float %x)
+define i32 @cos_test(float %x) {
+  call float @llvm.cos(float %x)
   ret i32 4
 }

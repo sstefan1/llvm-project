@@ -90,8 +90,9 @@ static void bookkeeping(AbstractAttribute::ManifestPosition MP,
   switch (Attr.getKindAsEnum()) {
   case Attribute::NoSync:
     NumFnNoSync++;
+    break;
   default:
-   return;
+    return;
   }
 }
 
@@ -284,7 +285,7 @@ struct AANoSyncFunction : AANoSync, BooleanState {
   static bool isVolatile(Instruction *I);
 
   /// Helper function uset to check if intrinsic is volatile (memcpy, memmove, memset).
-  static bool isVolatileIntrinsic(Instruction *I);
+  static bool isNoSyncIntrinsic(Instruction *I);
 };
 
 bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
@@ -334,11 +335,17 @@ bool AANoSyncFunction::isNonRelaxedAtomic(Instruction *I) {
   return true;
 }
 
-bool AANoSyncFunction::isVolatileIntrinsic(Instruction *I) {
+/// Checks if an intrinsic is nosync. Currently only checks mem* intrinsics.
+/// FIXME: We should ipmrove the handling of intrinsics.
+bool AANoSyncFunction::isNoSyncIntrinsic(Instruction *I) {
   if (auto *II = dyn_cast<IntrinsicInst>(I)) {
-    /// Element wise atomic memory intrinsics are skipped as they can't be
-    /// volatile and can only be unordered.
     switch (II->getIntrinsicID()) {
+    /// Element wise atomic memory intrinsics are can only be unordered,
+    /// therefore nosync.
+    case Intrinsic::memset_element_unordered_atomic:
+    case Intrinsic::memmove_element_unordered_atomic:
+    case Intrinsic::memcpy_element_unordered_atomic:
+      return true;
     case Intrinsic::memset:
     case Intrinsic::memmove:
     case Intrinsic::memcpy: {
@@ -346,8 +353,8 @@ bool AANoSyncFunction::isVolatileIntrinsic(Instruction *I) {
       Value *Arg = II->getOperand(3);
       if (Arg->getType()->isIntegerTy(1) &&
           cast<ConstantInt>(Arg)->getValue() == 1)
-        return true;
-      break;
+        return false;
+      return true;
     }
     default:
       return false;
@@ -380,7 +387,7 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
     ImmutableCallSite ICS(I);
     auto *NoSyncAA = A.getAAFor<AANoSyncFunction>(*this, *I);
 
-    if (isa<IntrinsicInst>(I) && !isVolatileIntrinsic(I))
+    if (isa<IntrinsicInst>(I) && isNoSyncIntrinsic(I))
         continue;
 
     if (ICS && (!NoSyncAA || !NoSyncAA->isAssumedNoSync()) &&
@@ -394,6 +401,26 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
 
     indicatePessimisticFixpoint();
     return ChangeStatus::CHANGED;
+  }
+
+  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
+  auto Opcodes = {(unsigned)Instruction::Invoke, (unsigned)Instruction::CallBr,
+                  (unsigned)Instruction::Call};
+
+  for (unsigned Opcode : Opcodes) {
+    for (Instruction *I : OpcodeInstMap[Opcode]) {
+      if (I->mayReadOrWriteMemory())
+        continue;
+
+      ImmutableCallSite ICS(I);
+
+      /// non-convergent and readnone imply nosync.
+      if (!ICS.isConvergent())
+        continue;
+
+      indicatePessimisticFixpoint();
+      return ChangeStatus::CHANGED;
+    }
   }
 
   return ChangeStatus::UNCHANGED;
@@ -558,10 +585,14 @@ void Attributor::identifyDefaultAbstractAttributes(
     // to concrete attributes we only cache the ones that are as identified in
     // the following switch.
     // Note: There are no concrete attributes now so this is initially empty.
-    //switch (I.getOpcode()) {
-    //default:
-    //  break;
-    //}
+    switch (I.getOpcode()) {
+    default:
+      break;
+    case Instruction::Call:
+    case Instruction::CallBr:
+    case Instruction::Invoke:
+      IsInterestingOpcode = true;
+    }
     if (IsInterestingOpcode)
       InstOpcodeMap[I.getOpcode()].push_back(&I);
     if (I.mayReadOrWriteMemory())
