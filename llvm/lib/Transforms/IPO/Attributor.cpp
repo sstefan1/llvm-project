@@ -888,12 +888,14 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
 
   for (unsigned Opcode : Opcodes) {
     for (Instruction *I : OpcodeInstMap[Opcode]) {
+      // At this point we handled all read/write effects and they are all
+      // nosync, so they can be skipped.
       if (I->mayReadOrWriteMemory())
         continue;
 
       ImmutableCallSite ICS(I);
 
-      /// non-convergent and readnone imply nosync.
+      // non-convergent and readnone imply nosync.
       if (!ICS.isConvergent())
         continue;
 
