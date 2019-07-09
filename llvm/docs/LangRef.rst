@@ -1493,6 +1493,15 @@ example:
     Annotated functions may still raise an exception, i.a., ``nounwind`` is not implied.
     If an invocation of an annotated function does not return control back
     to a point in the call stack, the behavior is undefined.
+``nosync``
+    This function attribute indicates that the function does not communicate
+    (synchronize) with another thread through memory or other well-defined means.
+    Synchronization is considered possible in the presence of `atomic` accesses
+    that enforce an order, thus not "unordered" and "monotonic", `volatile` accesses,
+    as well as `convergent` function calls. Note that through the latter non-memory
+    communication, e.g., cross-lane operations, is also considered synchronization.
+    If an annotated function does ever synchronize with another thread,
+    the behavior is undefined.
 ``nounwind``
     This function attribute indicates that the function never raises an
     exception. If the function does raise an exception, its runtime
