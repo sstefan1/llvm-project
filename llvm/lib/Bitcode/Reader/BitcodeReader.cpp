@@ -1281,7 +1281,8 @@ static uint64_t getRawAttributeMask(Attribute::AttrKind Val) {
   case Attribute::NoFree:
     return 1ULL << 63;
   case Attribute::NoSync:
-    return 1ULL << 64;
+    llvm_unreachable("nosync attribute not supported in raw format");
+    break;
   case Attribute::Dereferenceable:
     llvm_unreachable("dereferenceable attribute not supported in raw format");
     break;
@@ -1307,7 +1308,8 @@ static void addRawAttributeValue(AttrBuilder &B, uint64_t Val) {
     if (I == Attribute::Dereferenceable ||
         I == Attribute::DereferenceableOrNull ||
         I == Attribute::ArgMemOnly ||
-        I == Attribute::AllocSize)
+        I == Attribute::AllocSize ||
+        I == Attribute::NoSync)
       continue;
     if (uint64_t A = (Val & getRawAttributeMask(I))) {
       if (I == Attribute::Alignment)

@@ -203,8 +203,8 @@ declare void @nobuiltin()
 define void @f34()
 ; CHECK: define void @f34()
 {
-        call void @nobuiltin() nobuiltin
-; CHECK: call void @nobuiltin() #38
+  call void @nobuiltin() nobuiltin
+; CHECK: call void @nobuiltin() #39
         ret void;
 }
 
@@ -362,8 +362,8 @@ define void @f61() nofree {
   ret void
 }
 
-; CHECK: define void @f60() #39
-define void @f62() nosync 
+; CHECK: define void @f62() #38
+define void @f62() nosync
 {
   ret void
 }
@@ -406,5 +406,5 @@ define void @f62() nosync
 ; CHECK: attributes #35 = { shadowcallstack }
 ; CHECK: attributes #36 = { willreturn }
 ; CHECK: attributes #37 = { nofree }
-; CHECK: attributes #38 = { nobuiltin }
-; CHECK: attributes #39 = { nosync }
+; CHECK: attributes #38 = { nosync }
+; CHECK: attributes #39 = { nobuiltin }

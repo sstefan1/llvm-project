@@ -1498,8 +1498,9 @@ example:
     (synchronize) with another thread through memory or other well-defined means.
     Synchronization is considered possible in the presence of `atomic` accesses
     that enforce an order, thus not "unordered" and "monotonic", `volatile` accesses,
-    as well as `convergent` function calls. Note that through the latter non-memory
-    communication, e.g., cross-lane operations, is also considered synchronization.
+    as well as `convergent` function calls. Note that through `convergent` function calls
+    non-memory communication, e.g., cross-lane operations, are possible and are also
+    considered synchronization. However `convergent` does not contradict `nosync`.
     If an annotated function does ever synchronize with another thread,
     the behavior is undefined.
 ``nounwind``

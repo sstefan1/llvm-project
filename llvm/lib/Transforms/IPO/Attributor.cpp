@@ -827,14 +827,10 @@ bool AANoSyncFunction::isNoSyncIntrinsic(Instruction *I) {
       return true;
     case Intrinsic::memset:
     case Intrinsic::memmove:
-    case Intrinsic::memcpy: {
-      /// isvolatile is 4th argument in these intrinsics.
-      Value *Arg = II->getOperand(3);
-      if (Arg->getType()->isIntegerTy(1) &&
-          cast<ConstantInt>(Arg)->getValue() == 1)
-        return false;
-      return true;
-    }
+    case Intrinsic::memcpy:
+      if (!cast<MemIntrinsic>(II)->isVolatile())
+        return true;
+      return false;
     default:
       return false;
     }
@@ -843,6 +839,9 @@ bool AANoSyncFunction::isNoSyncIntrinsic(Instruction *I) {
 }
 
 bool AANoSyncFunction::isVolatile(Instruction *I) {
+  assert(!ImmutableCallSite(I) && !isa<CallBase>(I) &&
+         "Calls should not be checked here");
+
   switch (I->getOpcode()) {
   case Instruction::AtomicRMW:
     return cast<AtomicRMWInst>(I)->isVolatile();
@@ -874,6 +873,9 @@ ChangeStatus AANoSyncFunction::updateImpl(Attributor &A) {
       indicatePessimisticFixpoint();
       return ChangeStatus::CHANGED;
     }
+
+    if(ICS)
+      continue;
 
     if (!isVolatile(I) && !isNonRelaxedAtomic(I))
       continue;
