@@ -15,7 +15,7 @@
 #include "AMDGPULegalizerInfo.h"
 #include "AMDGPUTargetMachine.h"
 #include "SIMachineFunctionInfo.h"
-
+#include "llvm/CodeGen/GlobalISel/LegalizerHelper.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/ValueTypes.h"
@@ -90,7 +90,8 @@ static LegalityPredicate isRegisterType(unsigned TypeIdx) {
     if (Ty.isVector()) {
       const int EltSize = Ty.getElementType().getSizeInBits();
       return EltSize == 32 || EltSize == 64 ||
-            (EltSize == 16 && Ty.getNumElements() % 2 == 0);
+            (EltSize == 16 && Ty.getNumElements() % 2 == 0) ||
+             EltSize == 128 || EltSize == 256;
     }
 
     return Ty.getSizeInBits() % 32 == 0 && Ty.getSizeInBits() <= 512;
@@ -170,6 +171,10 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
 
   const std::initializer_list<LLT> FPTypes16 = {
     S32, S64, S16
+  };
+
+  const std::initializer_list<LLT> FPTypesPK16 = {
+    S32, S64, S16, V2S16
   };
 
   setAction({G_BRCOND, S1}, Legal);
@@ -270,6 +275,27 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
       FPOpActions.legalFor({S16});
   }
 
+  auto &MinNumMaxNum = getActionDefinitionsBuilder({
+      G_FMINNUM, G_FMAXNUM, G_FMINNUM_IEEE, G_FMAXNUM_IEEE});
+
+  if (ST.hasVOP3PInsts()) {
+    MinNumMaxNum.customFor(FPTypesPK16)
+      .clampMaxNumElements(0, S16, 2)
+      .clampScalar(0, S16, S64)
+      .scalarize(0);
+  } else if (ST.has16BitInsts()) {
+    MinNumMaxNum.customFor(FPTypes16)
+      .clampScalar(0, S16, S64)
+      .scalarize(0);
+  } else {
+    MinNumMaxNum.customFor(FPTypesBase)
+      .clampScalar(0, S32, S64)
+      .scalarize(0);
+  }
+
+  // TODO: Implement
+  getActionDefinitionsBuilder({G_FMINIMUM, G_FMAXIMUM}).lower();
+
   if (ST.hasVOP3PInsts())
     FPOpActions.clampMaxNumElements(0, S16, 2);
   FPOpActions
@@ -297,9 +323,8 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
     .lowerFor({{S64, S16}}) // FIXME: Implement
     .scalarize(0);
 
-  getActionDefinitionsBuilder(G_FCOPYSIGN)
-    .legalForCartesianProduct({S16, S32, S64}, {S16, S32, S64})
-    .scalarize(0);
+  // TODO: Verify V_BFI_B32 is generated from expanded bit ops.
+  getActionDefinitionsBuilder(G_FCOPYSIGN).lower();
 
   getActionDefinitionsBuilder(G_FSUB)
       // Use actual fsub instruction
@@ -517,7 +542,14 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
 
         case 256:
         case 512:
-          // TODO: constant loads
+          // TODO: Possibly support loads of i256 and i512 .  This will require
+          // adding i256 and i512 types to MVT in order for to be able to use
+          // TableGen.
+          // TODO: Add support for other vector types, this will require
+          //       defining more value mappings for the new types.
+          return Ty0.isVector() && (Ty0.getScalarType().getSizeInBits() == 32 ||
+                                    Ty0.getScalarType().getSizeInBits() == 64);
+
         default:
           return false;
         }
@@ -648,18 +680,14 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
 
   }
 
-  // TODO: vectors of pointers
   getActionDefinitionsBuilder(G_BUILD_VECTOR)
       .legalForCartesianProduct(AllS32Vectors, {S32})
       .legalForCartesianProduct(AllS64Vectors, {S64})
       .clampNumElements(0, V16S32, V16S32)
       .clampNumElements(0, V2S64, V8S64)
       .minScalarSameAs(1, 0)
-      // FIXME: Sort of a hack to make progress on other legalizations.
-      .legalIf([=](const LegalityQuery &Query) {
-        return Query.Types[0].getScalarSizeInBits() <= 32 ||
-               Query.Types[0].getScalarSizeInBits() == 64;
-      });
+      .legalIf(isRegisterType(0))
+      .minScalarOrElt(0, S32);
 
   getActionDefinitionsBuilder(G_CONCAT_VECTORS)
     .legalIf(isRegisterType(0));
@@ -754,6 +782,11 @@ bool AMDGPULegalizerInfo::legalizeCustom(MachineInstr &MI,
     return legalizeITOFP(MI, MRI, MIRBuilder, true);
   case TargetOpcode::G_UITOFP:
     return legalizeITOFP(MI, MRI, MIRBuilder, false);
+  case TargetOpcode::G_FMINNUM:
+  case TargetOpcode::G_FMAXNUM:
+  case TargetOpcode::G_FMINNUM_IEEE:
+  case TargetOpcode::G_FMAXNUM_IEEE:
+    return legalizeMinNumMaxNum(MI, MRI, MIRBuilder);
   default:
     return false;
   }
@@ -1059,6 +1092,30 @@ bool AMDGPULegalizerInfo::legalizeITOFP(
   B.buildFAdd(Dst, LdExp, CvtLo);
   MI.eraseFromParent();
   return true;
+}
+
+bool AMDGPULegalizerInfo::legalizeMinNumMaxNum(
+  MachineInstr &MI, MachineRegisterInfo &MRI,
+  MachineIRBuilder &B) const {
+  MachineFunction &MF = B.getMF();
+  const SIMachineFunctionInfo *MFI = MF.getInfo<SIMachineFunctionInfo>();
+
+  const bool IsIEEEOp = MI.getOpcode() == AMDGPU::G_FMINNUM_IEEE ||
+                        MI.getOpcode() == AMDGPU::G_FMAXNUM_IEEE;
+
+  // With ieee_mode disabled, the instructions have the correct behavior
+  // already for G_FMINNUM/G_FMAXNUM
+  if (!MFI->getMode().IEEE)
+    return !IsIEEEOp;
+
+  if (IsIEEEOp)
+    return true;
+
+  MachineIRBuilder HelperBuilder(MI);
+  GISelObserverWrapper DummyObserver;
+  LegalizerHelper Helper(MF, DummyObserver, HelperBuilder);
+  HelperBuilder.setMBB(*MI.getParent());
+  return Helper.lowerFMinNumMaxNum(MI) == LegalizerHelper::Legalized;
 }
 
 // Return the use branch instruction, otherwise null if the usage is invalid.

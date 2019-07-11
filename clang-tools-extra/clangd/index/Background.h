@@ -14,6 +14,7 @@
 #include "GlobalCompilationDatabase.h"
 #include "SourceCode.h"
 #include "Threading.h"
+#include "index/BackgroundRebuild.h"
 #include "index/FileIndex.h"
 #include "index/Index.h"
 #include "index/Serialization.h"
@@ -24,6 +25,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <thread>
 #include <vector>
@@ -58,6 +60,46 @@ public:
   static Factory createDiskBackedStorageFactory();
 };
 
+// A priority queue of tasks which can be run on (external) worker threads.
+class BackgroundQueue {
+public:
+  /// A work item on the thread pool's queue.
+  struct Task {
+    explicit Task(std::function<void()> Run) : Run(std::move(Run)) {}
+
+    std::function<void()> Run;
+    llvm::ThreadPriority ThreadPri = llvm::ThreadPriority::Background;
+    // Higher-priority tasks will run first.
+    unsigned QueuePri = 0;
+
+    bool operator<(const Task &O) const { return QueuePri < O.QueuePri; }
+  };
+
+  // Add tasks to the queue.
+  void push(Task);
+  void append(std::vector<Task>);
+
+  // Process items on the queue until the queue is stopped.
+  // If the queue becomes empty, OnIdle will be called (on one worker).
+  void work(std::function<void()> OnIdle = nullptr);
+
+  // Stop processing new tasks, allowing all work() calls to return soon.
+  void stop();
+
+  // Disables thread priority lowering to ensure progress on loaded systems.
+  // Only affects tasks that run after the call.
+  static void preventThreadStarvationInTests();
+  LLVM_NODISCARD bool
+  blockUntilIdleForTest(llvm::Optional<double> TimeoutSeconds);
+
+private:
+  std::mutex Mu;
+  unsigned NumActiveTasks = 0; // Only idle when queue is empty *and* no tasks.
+  std::condition_variable CV;
+  bool ShouldStop = false;
+  std::vector<Task> Queue; // max-heap
+};
+
 // Builds an in-memory index by by running the static indexer action over
 // all commands in a compilation database. Indexing happens in the background.
 // FIXME: it should also persist its state on disk for fast start.
@@ -71,26 +113,28 @@ public:
       Context BackgroundContext, const FileSystemProvider &,
       const GlobalCompilationDatabase &CDB,
       BackgroundIndexStorage::Factory IndexStorageFactory,
-      size_t BuildIndexPeriodMs = 0,
       size_t ThreadPoolSize = llvm::heavyweight_hardware_concurrency());
   ~BackgroundIndex(); // Blocks while the current task finishes.
 
   // Enqueue translation units for indexing.
   // The indexing happens in a background thread, so the symbols will be
   // available sometime later.
-  void enqueue(const std::vector<std::string> &ChangedFiles);
+  void enqueue(const std::vector<std::string> &ChangedFiles) {
+    Queue.push(changedFilesTask(ChangedFiles));
+  }
 
   // Cause background threads to stop after ther current task, any remaining
   // tasks will be discarded.
-  void stop();
+  void stop() {
+    Rebuilder.shutdown();
+    Queue.stop();
+  }
 
   // Wait until the queue is empty, to allow deterministic testing.
   LLVM_NODISCARD bool
-  blockUntilIdleForTest(llvm::Optional<double> TimeoutSeconds = 10);
-
-  // Disables thread priority lowering in background index to make sure it can
-  // progress on loaded systems. Only affects tasks that run after the call.
-  static void preventThreadStarvationInTests();
+  blockUntilIdleForTest(llvm::Optional<double> TimeoutSeconds = 10) {
+    return Queue.blockUntilIdleForTest(TimeoutSeconds);
+  }
 
 private:
   /// Represents the state of a single file when indexing was performed.
@@ -111,16 +155,11 @@ private:
   const GlobalCompilationDatabase &CDB;
   Context BackgroundContext;
 
-  // index state
   llvm::Error index(tooling::CompileCommand,
                     BackgroundIndexStorage *IndexStorage);
-  void buildIndex(); // Rebuild index periodically every BuildIndexPeriodMs.
-  const size_t BuildIndexPeriodMs;
-  std::atomic<bool> SymbolsUpdatedSinceLastIndex;
-  std::mutex IndexMu;
-  std::condition_variable IndexCV;
 
   FileSymbols IndexedSymbols;
+  BackgroundIndexRebuilder Rebuilder;
   llvm::StringMap<ShardVersion> ShardVersions; // Key is absolute file path.
   std::mutex ShardVersionsMu;
 
@@ -139,19 +178,18 @@ private:
   // Tries to load shards for the ChangedFiles.
   std::vector<std::pair<tooling::CompileCommand, BackgroundIndexStorage *>>
   loadShards(std::vector<std::string> ChangedFiles);
-  void enqueue(tooling::CompileCommand Cmd, BackgroundIndexStorage *Storage);
 
-  // queue management
-  using Task = std::function<void()>;
-  void run(); // Main loop executed by Thread. Runs tasks from Queue.
-  void enqueueTask(Task T, llvm::ThreadPriority Prioirty);
-  void enqueueLocked(tooling::CompileCommand Cmd,
-                     BackgroundIndexStorage *IndexStorage);
-  std::mutex QueueMu;
-  unsigned NumActiveTasks = 0; // Only idle when queue is empty *and* no tasks.
-  std::condition_variable QueueCV;
-  bool ShouldStop = false;
-  std::deque<std::pair<Task, llvm::ThreadPriority>> Queue;
+  BackgroundQueue::Task
+  changedFilesTask(const std::vector<std::string> &ChangedFiles);
+  BackgroundQueue::Task indexFileTask(tooling::CompileCommand Cmd,
+                                      BackgroundIndexStorage *Storage);
+
+  // from lowest to highest priority
+  enum QueuePriority {
+    IndexFile,
+    LoadShards,
+  };
+  BackgroundQueue Queue;
   AsyncTaskRunner ThreadPool;
   GlobalCompilationDatabase::CommandChanged::Subscription CommandsChanged;
 };
