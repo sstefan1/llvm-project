@@ -72,9 +72,21 @@ __tsan::uptr InitializeGuardPtr() __attribute__((visibility("hidden")));
 extern "C" __tsan::uptr _tsan_pointer_chk_guard;
 #endif
 
+#if SANITIZER_LINUX && defined(__aarch64__) && !SANITIZER_GO
+# define INIT_LONGJMP_XOR_KEY 1
+#else
+# define INIT_LONGJMP_XOR_KEY 0
+#endif
+
+#if INIT_LONGJMP_XOR_KEY
+#include "interception/interception.h"
+// Must be declared outside of other namespaces.
+DECLARE_REAL(int, _setjmp, void *env)
+#endif
+
 namespace __tsan {
 
-#if SANITIZER_LINUX && defined(__aarch64__)
+#if INIT_LONGJMP_XOR_KEY
 static void InitializeLongjmpXorKey();
 static uptr longjmp_xor_key;
 #endif
@@ -254,7 +266,8 @@ void InitializePlatform() {
   // Go maps shadow memory lazily and works fine with limited address space.
   // Unlimited stack is not a problem as well, because the executable
   // is not compiled with -pie.
-  if (!SANITIZER_GO) {
+#if !SANITIZER_GO
+  {
     bool reexec = false;
     // TSan doesn't play well with unlimited stack size (as stack
     // overlaps with shadow memory). If we detect unlimited stack size,
@@ -291,9 +304,9 @@ void InitializePlatform() {
     }
     // Initialize the guard pointer used in {sig}{set,long}jump.
     longjmp_xor_key = InitializeGuardPtr();
-    uptr old_value = longjmp_xor_key;
-    InitializeLongjmpXorKey();
-    CHECK_EQ(longjmp_xor_key, old_value);
+    // uptr old_value = longjmp_xor_key;
+    // InitializeLongjmpXorKey();
+    // CHECK_EQ(longjmp_xor_key, old_value);
     // If the above check fails for you, please contact me (jlettner@apple.com)
     // and let me know the values of the two differing keys.  Please also set a
     // breakpoint on `InitializeGuardPtr` and `InitializeLongjmpXorKey` and tell
@@ -314,10 +327,9 @@ void InitializePlatform() {
       ReExec();
   }
 
-#if !SANITIZER_GO
   CheckAndProtect();
   InitTlsSize();
-#endif
+#endif  // !SANITIZER_GO
 }
 
 #if !SANITIZER_GO
@@ -415,15 +427,15 @@ uptr ExtractLongJmpSp(uptr *env) {
   return UnmangleLongJmpSp(mangled_sp);
 }
 
-#if SANITIZER_LINUX && defined(__aarch64__)
+#if INIT_LONGJMP_XOR_KEY
 // GLIBC mangles the function pointers in jmp_buf (used in {set,long}*jmp
 // functions) by XORing them with a random key.  For AArch64 it is a global
 // variable rather than a TCB one (as for x86_64/powerpc).  We obtain the key by
 // issuing a setjmp and XORing the SP pointer values to derive the key.
 static void InitializeLongjmpXorKey() {
   // 1. Call REAL(setjmp), which stores the mangled SP in env.
-  jump_buf env;
-  REAL(setjmp)(env);
+  jmp_buf env;
+  REAL(_setjmp)(env);
 
   // 2. Retrieve mangled/vanilla SP.
   uptr mangled_sp = ((uptr *)&env)[LONG_JMP_SP_ENV_SLOT];
@@ -461,7 +473,7 @@ int call_pthread_cancel_with_cleanup(int(*fn)(void *c, void *m,
   pthread_cleanup_pop(0);
   return res;
 }
-#endif
+#endif  // !SANITIZER_GO
 
 #if !SANITIZER_GO
 void ReplaceSystemMalloc() { }
