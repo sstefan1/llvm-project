@@ -363,8 +363,7 @@ define void @f61() nofree {
 }
 
 ; CHECK: define void @f62() #38
-define void @f62() nosync
-{
+define void @f62() nosync {
   ret void
 }
 
