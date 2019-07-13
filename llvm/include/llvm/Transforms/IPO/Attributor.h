@@ -717,10 +717,10 @@ struct AAIsDead : public AbstractAttribute {
       Attribute::AttrKind(Attribute::EndAttrKinds + 1);
 
   /// Returns true if nounwind is assumed.
-  virtual bool isAssumedDead() const = 0;
+  virtual bool isAssumedDead(BasicBlock *BB) const = 0;
 
   /// Returns true if nounwind is known.
-  virtual bool isKnownDead() const = 0;
+  virtual bool isKnownDead(BasicBlock *BB) const = 0;
 };
 
 } // end namespace llvm
