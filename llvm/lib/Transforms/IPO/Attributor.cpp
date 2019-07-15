@@ -1015,7 +1015,7 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   void initialize(Attributor &A) override {
     Function &F = getAnchorScope();
 
-    ToBeExploredPaths.push_back(&(F.getEntryBlock().front()));
+    ToBeExploredPaths.insert(&(F.getEntryBlock().front()));
     for (size_t i = 0; i < ToBeExploredPaths.size(); ++i)
       explorePath(A, ToBeExploredPaths[i]);
   }
@@ -1038,7 +1038,6 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
 
     for (Instruction *I : NoReturnCalls) {
       auto *Unreachable = new UnreachableInst(I->getContext());
-      // Unreachable->insertAfter(I);
       BasicBlock *BB = I->getParent();
       SplitBlock(BB, I->getNextNode());
       ReplaceInstWithInst(BB->getTerminator(), Unreachable);
@@ -1055,9 +1054,9 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   bool isAssumedDead(BasicBlock *BB) const override {
     if (!getAssumed())
       return false;
-    if (AssumedDeadBlocks.find(BB) != AssumedDeadBlocks.end())
-      return true;
-    return false;
+    if (AssumedLiveBlocks.count(BB))
+      return false;
+    return true;
   }
 
   /// See AAIsDead::isKnownDead().
@@ -1066,13 +1065,13 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
       return false;
     if (getKnown() != getAssumed())
       return false;
-    if (AssumedDeadBlocks.find(BB) != AssumedDeadBlocks.end())
-      return true;
-    return false;
+    if (AssumedLiveBlocks.count(BB))
+      return false;
+    return true;
   }
 
-  /// Map of to be explored paths.
-  SmallVector<Instruction *, 8> ToBeExploredPaths;
+  /// Collection of to be explored paths.
+  SmallSetVector<Instruction *, 8> ToBeExploredPaths;
 
   /// Collection of all assumed dead BasicBlocks.
   DenseSet<BasicBlock *> AssumedDeadBlocks;
@@ -1087,31 +1086,30 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
 bool AAIsDeadFunction::explorePath(Attributor &A, Instruction *I) {
   BasicBlock *BB = I->getParent();
 
-  for (Instruction &Inst : *BB) {
-    ImmutableCallSite ICS(&Inst);
-    auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, Inst);
+  while (I) {
+    ImmutableCallSite ICS(I);
+    auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
 
-    if (ICS) {
-      if ((NoReturnAA && (NoReturnAA->isAssumedNoReturn() ||
-                          NoReturnAA->isKnownNoReturn())) ||
-          ICS.hasFnAttr(Attribute::NoReturn)) {
-        NoReturnCalls.insert(&Inst);
-        return false;
-      }
+    if (ICS && ((NoReturnAA && (NoReturnAA->isAssumedNoReturn())) ||
+        ICS.hasFnAttr(Attribute::NoReturn))) {
+      NoReturnCalls.insert(I);
+      return false;
     }
+
+    I = I->getNextNode();
   }
 
   // get new paths (reachable blocks).
-  Instruction *Terminator = BB->getTerminator();
-  unsigned NumSucc = Terminator->getNumSuccessors();
-
-  for (unsigned i = 0; i < NumSucc; ++i) {
-    Instruction *Inst = &(Terminator->getSuccessor(i)->front());
-    AssumedLiveBlocks.insert(Terminator->getSuccessor(i));
-    if (!is_contained(ToBeExploredPaths, Inst))
-      ToBeExploredPaths.push_back(Inst);
+  bool HasNewPath = false;
+  for (BasicBlock *SuccBB : successors(BB)) {
+    Instruction *Inst = &(SuccBB->front());
+    AssumedLiveBlocks.insert(SuccBB);
+    if (!ToBeExploredPaths.count(Inst)) {
+      ToBeExploredPaths.insert(Inst);
+      HasNewPath = true;
+    }
   }
-  return true;
+  return HasNewPath;
 }
 
 ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
@@ -1121,60 +1119,25 @@ ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
     size_t Size = ToBeExploredPaths.size();
 
     // Still noreturn.
-    if (explorePath(A, I))
+    if (!explorePath(A, I))
       continue;
 
     // No new paths.
-    if ((Size - ToBeExploredPaths.size()) == 0)
+    if (Size == ToBeExploredPaths.size())
       continue;
 
-    while(Size != ToBeExploredPaths.size())
+    while (Size != ToBeExploredPaths.size())
       explorePath(A, ToBeExploredPaths[Size++]);
   }
 
-  // Remember DeadBlocks.
-  for (BasicBlock &BB : F)
-    if (AssumedLiveBlocks.find(&BB) == AssumedLiveBlocks.end())
-      // If it is not in live set, then it is dead.
-      AssumedDeadBlocks.insert(&BB);
+  LLVM_DEBUG(dbgs() << "[AAIsDead] AssumedLiveBlocks: "
+                    << AssumedLiveBlocks.size()
+                    << "Total number of blocks: " << F.size() << "\n");
 
-  auto &OpcodeInstMap = InfoCache.getOpcodeInstMapForFunction(F);
-  auto Opcodes = {(unsigned)Instruction::Invoke, (unsigned)Instruction::Call,
-                  (unsigned)Instruction::CallBr};
+  if (AssumedLiveBlocks.size() < F.size())
+    return ChangeStatus::UNCHANGED;
 
-  /// Check if some other calls became noreturn in the mean time.
-  for (unsigned Opcode : Opcodes) {
-    for (Instruction *I : OpcodeInstMap[Opcode]) {
-      if (NoReturnCalls.find(I) != NoReturnCalls.end())
-        continue;
-
-      ImmutableCallSite ICS(I);
-      auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
-
-      if (ICS &&
-          (!NoReturnAA || !NoReturnAA->isAssumedNoReturn() ||
-           !NoReturnAA->isKnownNoReturn()) &&
-          !ICS.hasFnAttr(Attribute::NoReturn))
-        continue;
-
-      /// Check if we can assume this block to be live.
-      BasicBlock *BB = I->getParent();
-      for (BasicBlock *PredBB : predecessors(BB)) {
-        /// If atleast one block is live, current block is also live.
-        if (AssumedDeadBlocks.find(PredBB) != AssumedDeadBlocks.end()) {
-          AssumedDeadBlocks.erase(BB);
-          AssumedLiveBlocks.insert(BB);
-        }
-      }
-    }
-  }
-
-  if (AssumedDeadBlocks.size() != 0) {
-    indicateOptimisticFixpoint();
-    return ChangeStatus::CHANGED;
-  }
-
-  return ChangeStatus::UNCHANGED;
+  return ChangeStatus::CHANGED;
 }
 
 /// ----------------------------------------------------------------------------
