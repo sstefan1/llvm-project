@@ -1016,6 +1016,7 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
     Function &F = getAnchorScope();
 
     ToBeExploredPaths.insert(&(F.getEntryBlock().front()));
+    AssumedLiveBlocks.insert(&(F.getEntryBlock()));
     for (size_t i = 0; i < ToBeExploredPaths.size(); ++i)
       explorePath(A, ToBeExploredPaths[i]);
   }
@@ -1073,9 +1074,6 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   /// Collection of to be explored paths.
   SmallSetVector<Instruction *, 8> ToBeExploredPaths;
 
-  /// Collection of all assumed dead BasicBlocks.
-  DenseSet<BasicBlock *> AssumedDeadBlocks;
-
   /// Collection of all assumed live BasicBlocks.
   DenseSet<BasicBlock *> AssumedLiveBlocks;
 
@@ -1090,58 +1088,62 @@ bool AAIsDeadFunction::explorePath(Attributor &A, Instruction *I) {
     ImmutableCallSite ICS(I);
     auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
 
-    if (ICS && ((NoReturnAA && (NoReturnAA->isAssumedNoReturn())) ||
-        ICS.hasFnAttr(Attribute::NoReturn))) {
-      NoReturnCalls.insert(I);
-      return false;
+    if (ICS) {
+      if (NoReturnAA && NoReturnAA->isAssumedNoReturn()) {
+        NoReturnCalls.insert(I);
+        return false;
+      }
+
+      if (ICS.hasFnAttr(Attribute::NoReturn)) {
+        NoReturnCalls.insert(I);
+        return false;
+      }
     }
 
     I = I->getNextNode();
   }
 
   // get new paths (reachable blocks).
-  bool HasNewPath = false;
   for (BasicBlock *SuccBB : successors(BB)) {
     Instruction *Inst = &(SuccBB->front());
     AssumedLiveBlocks.insert(SuccBB);
-    if (!ToBeExploredPaths.count(Inst))
-      if (ToBeExploredPaths.insert(Inst))
-        HasNewPath = true;
+    ToBeExploredPaths.insert(Inst);
   }
 
-  return HasNewPath;
+  return true;;
 }
 
 ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
   Function &F = getAnchorScope();
 
-  // Temporary collection to hold noreturn instructions that need to be removed
-  // from NoReturnCalls collection.
+  // Temporary collection to iterate over existing noreturn instructions. This
+  // will alow easier modification of NoReturnCalls collection
   SmallVector<Instruction *, 8> NoReturnChanged;
   ChangeStatus Status = ChangeStatus::UNCHANGED;
 
-  for (auto *I : NoReturnCalls) {
+  for (Instruction *I : NoReturnCalls)
+    NoReturnChanged.push_back(I);
+
+  for (Instruction *I : NoReturnChanged) {
     size_t Size = ToBeExploredPaths.size();
 
     // Still noreturn.
     if (!explorePath(A, I))
       continue;
 
-    NoReturnChanged.push_back(I);
+    NoReturnCalls.erase(I);
 
     // No new paths.
     if (Size == ToBeExploredPaths.size())
       continue;
 
-    while (Size != ToBeExploredPaths.size())
-      if (explorePath(A, ToBeExploredPaths[Size++]))
-        Status = ChangeStatus::CHANGED;
-  }
+    // At least one new path.
+    Status = ChangeStatus::CHANGED;
 
-  // Removing noreturn Instructions that are not noreturn anymore.
-  for (auto *I : NoReturnChanged)
-    if (NoReturnCalls.count(I))
-      NoReturnCalls.erase(I);
+    // explore new paths.
+    while (Size != ToBeExploredPaths.size())
+      explorePath(A, ToBeExploredPaths[Size++]);
+  }
 
   LLVM_DEBUG(dbgs() << "[AAIsDead] AssumedLiveBlocks: "
                     << AssumedLiveBlocks.size()

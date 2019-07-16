@@ -81,14 +81,16 @@ cond.end:                                         ; preds = %cond.false, %cond.t
   ret i32 %cond
 }
 
-; TEST 4: Undefined behvior
+; TEST 4: Undefined behvior, taken from LangRef.
 ; FIXME: Should be able to detect undefined behavior.
 
-; CHECK define @f(i32)
-define i1 @f(i32) {
-  %2 = add nsw i32 %0, 1
-  %3 = icmp sgt i32 %2, %0
-  ret i1 %3
+; CHECK define @ub(i32)
+define void @ub(i32* ) {
+  %poison = sub nuw i32 0, 1           ; Results in a poison value.
+  %still_poison = and i32 %poison, 0   ; 0, but also poison.
+  %poison_yet_again = getelementptr i32, i32* %0, i32 %still_poison
+  store i32 0, i32* %poison_yet_again  ; Undefined behavior due to store to poison.
+  ret void
 }
 
 define void @inf_loop() #0 {
@@ -144,7 +146,7 @@ cond.if:                                                ; preds = %2
   br label %cond.end
 
 cond.elseif:                                                ; preds = %2
-  call void @inf_loop()
+  call void @rec()
   %5 = icmp slt i32 %0, %1
   br i1 %5, label %cond.end, label %cond.else
 
@@ -155,4 +157,52 @@ cond.else:                                                ; preds = %cond.elseif
 cond.end:                                               ; preds = %cond.if, %cond.else, %cond.elseif
   %7 = phi i32 [ %1, %cond.elseif ], [ 0, %cond.else ], [ 0, %cond.if ]
   ret i32 %7
+}
+; TEST 7: Recursion
+; FIXME: contains recursive call to itself in cond.elseif block
+
+define i32 @test7(i32, i32) #0 {
+  %3 = icmp sgt i32 %0, %1
+  br i1 %3, label %cond.if, label %cond.elseif
+
+cond.if:                                                ; preds = %2
+  %4 = tail call i32 @bar()
+  br label %cond.end
+
+cond.elseif:                                                ; preds = %2
+  %5 = tail call i32 @test7(i32 %0, i32 %1)
+  %6 = icmp slt i32 %0, %1
+  br i1 %6, label %cond.end, label %cond.else
+
+cond.else:                                                ; preds = %cond.elseif
+  %7 = tail call i32 @foo()
+  br label %cond.end
+
+cond.end:                                               ; preds = %cond.if, %cond.else, %cond.elseif
+  %8 = phi i32 [ %1, %cond.elseif ], [ 0, %cond.else ], [ 0, %cond.if ]
+  ret i32 %8
+}
+
+; TEST 8: Only first block is live.
+
+define i32 @first_block_no_return(i32 %a) #0 {
+entry:
+  call void @no_return_call()
+  %cmp = icmp eq i32 %a, 0
+  br i1 %cmp, label %cond.true, label %cond.false
+
+cond.true:                                        ; preds = %entry
+  call void @normal_call()
+  ; CHECK: unreachable
+  %call = call i32 @foo()
+  br label %cond.end
+
+cond.false:                                       ; preds = %entry
+  call void @normal_call()
+  %call1 = call i32 @bar()
+  br label %cond.end
+
+cond.end:                                         ; preds = %cond.false, %cond.true
+  %cond = phi i32 [ %call, %cond.true ], [ %call1, %cond.false ]
+  ret i32 %cond
 }
