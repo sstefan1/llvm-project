@@ -1025,7 +1025,8 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   bool explorePath(Attributor &A, Instruction *I);
 
   const std::string getAsStr() const override {
-    return getAssumed() ? "dead" : "maybe-dead";
+    return "LiveBBs(" + std::to_string(AssumedLiveBlocks.size()) + "/" +
+           std::to_string(getAnchorScope().size()) + ")";
   }
 
   /// See AbstractAttribute::manifest(...).
@@ -1090,13 +1091,21 @@ bool AAIsDeadFunction::explorePath(Attributor &A, Instruction *I) {
 
     if (ICS) {
       if (NoReturnAA && NoReturnAA->isAssumedNoReturn()) {
-        NoReturnCalls.insert(I);
-        return false;
+        if (!NoReturnCalls.insert(I).second)
+          // If I is already in the NoReturnCalls set, then it stayed noreturn
+          // and we didn't discover any new instructions.
+          return false;
+
+        // Discovered new noreturn call, return true to indicate that I is not
+        // noreturn anymore and should be deleted from NoReturnCalls.
+        return true;
       }
 
       if (ICS.hasFnAttr(Attribute::NoReturn)) {
-        NoReturnCalls.insert(I);
-        return false;
+        if(!NoReturnCalls.insert(I).second)
+          return false;
+
+        return true;
       }
     }
 
@@ -1110,7 +1119,7 @@ bool AAIsDeadFunction::explorePath(Attributor &A, Instruction *I) {
     ToBeExploredPaths.insert(Inst);
   }
 
-  return true;;
+  return true;
 }
 
 ChangeStatus AAIsDeadFunction::updateImpl(Attributor &A) {
