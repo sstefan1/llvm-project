@@ -716,10 +716,10 @@ struct AAIsDead : public AbstractAttribute {
   static constexpr Attribute::AttrKind ID =
       Attribute::AttrKind(Attribute::EndAttrKinds + 1);
 
-  /// Returns true if nounwind is assumed.
+  /// Returns true if \p BB is assumed dead.
   virtual bool isAssumedDead(BasicBlock *BB) const = 0;
 
-  /// Returns true if nounwind is known.
+  /// Returns true if \p BB is known dead.
   virtual bool isKnownDead(BasicBlock *BB) const = 0;
 };
 

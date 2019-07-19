@@ -1021,7 +1021,8 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
       explorePath(A, ToBeExploredPaths[i]);
   }
 
-  /// True if path had no dead instructions.
+  /// Explores new instructions starting from \p I. If instruction is dead, stop
+  /// and return true if it discovered a new instruction.
   bool explorePath(Attributor &A, Instruction *I);
 
   const std::string getAsStr() const override {
@@ -1033,13 +1034,22 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   ChangeStatus manifest(Attributor &A) override {
     assert(getState().isValidState() &&
            "Attempted to manifest an invalid state!");
-    assert(getAssociatedValue() &&
-           "Attempted to manifest an attribute without associated value!");
 
     ChangeStatus HasChanged = ChangeStatus::UNCHANGED;
 
     for (Instruction *I : NoReturnCalls) {
       auto *Unreachable = new UnreachableInst(I->getContext());
+
+      /// Invoke is replaced with a call and unreachable is placed after it.
+      if (auto *II = dyn_cast<InvokeInst>(I)) {
+        Function *F = II->getCalledFunction();
+        CallInst *CI = CallInst::Create(F->getFunctionType(), F);
+        ReplaceInstWithInst(II, CI);
+        CI->getParent()->getInstList().push_back(Unreachable);
+        LLVM_DEBUG(dbgs() << "[AAIsDead] Replaced invoke with call inst\n");
+        continue;
+      }
+
       BasicBlock *BB = I->getParent();
       SplitBlock(BB, I->getNextNode());
       ReplaceInstWithInst(BB->getTerminator(), Unreachable);
@@ -1056,20 +1066,20 @@ struct AAIsDeadFunction : AAIsDead, BooleanState {
   bool isAssumedDead(BasicBlock *BB) const override {
     if (!getAssumed())
       return false;
-    if (AssumedLiveBlocks.count(BB))
-      return false;
-    return true;
+    return !AssumedLiveBlocks.count(BB);
+    // if (AssumedLiveBlocks.count(BB))
+      // return false;
+    // return true;
   }
 
   /// See AAIsDead::isKnownDead().
   bool isKnownDead(BasicBlock *BB) const override {
     if (!getKnown())
       return false;
-    if (getKnown() != getAssumed())
-      return false;
-    if (AssumedLiveBlocks.count(BB))
-      return false;
-    return true;
+    return !AssumedLiveBlocks.count(BB);
+    // if (AssumedLiveBlocks.count(BB))
+      // return false;
+    // return true;
   }
 
   /// Collection of to be explored paths.
@@ -1087,9 +1097,10 @@ bool AAIsDeadFunction::explorePath(Attributor &A, Instruction *I) {
 
   while (I) {
     ImmutableCallSite ICS(I);
-    auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
 
     if (ICS) {
+      auto *NoReturnAA = A.getAAFor<AANoReturnFunction>(*this, *I);
+
       if (NoReturnAA && NoReturnAA->isAssumedNoReturn()) {
         if (!NoReturnCalls.insert(I).second)
           // If I is already in the NoReturnCalls set, then it stayed noreturn
